@@ -335,3 +335,244 @@ describe("alignKeyValueRuns (gofmt composite-literal alignment)", () => {
     expect(alignKeyValueRuns(src)).toBe(src);
   });
 });
+
+describe("closure bookkeeping is dropped", () => {
+  test("`const x__closures = new Set()` produces no Go", () => {
+    // The compiler emits one of these per reactive signal so `_subscribe`
+    // can register client-side closures. Server-only rendering never reads
+    // them, so they must vanish rather than become a Go statement.
+    const code = go(
+      [
+        `const $input_events__closures = new Set();`,
+        `const $input_global__closures = new Set();`,
+        `_html("<p>hi</p>");`,
+      ].join("\n"),
+    );
+    expect(renderBody(code)).toBe(`w.HTML("<p>hi</p>")`);
+    expect(code).not.toContain("closures");
+    expect(code).not.toContain("Set");
+  });
+
+  test("_subscribe nested inside a && guard is dropped whole", () => {
+    // Real shape from counter.marko: the guard is a LogicalExpression whose
+    // right side is a _subscribe call wrapping further _subscribe/_scope
+    // calls. Only the OUTERMOST callee is inspected, which is enough.
+    const code = go(
+      [
+        `const $input_events__closures = new Set();`,
+        `_html("<p>hi</p>");`,
+        `($si__x) && _subscribe($input_events__closures, _subscribe($input_events__closures, _scope($scope1_id, {})));`,
+      ].join("\n"),
+      { imports: ["_subscribe", "_scope"] },
+    );
+    expect(renderBody(code)).toBe(`w.HTML("<p>hi</p>")`);
+  });
+
+  test("_resume_branch is dropped", () => {
+    const code = go(`_html("<p>hi</p>");\n_resume_branch($scope1_id);`, {
+      imports: ["_resume_branch"],
+    });
+    expect(renderBody(code)).toBe(`w.HTML("<p>hi</p>")`);
+  });
+});
+
+describe("typed for-of", () => {
+  const eventsInput = {
+    inputFields: [{ name: "Events", goType: "[]WidgetInputEvents", jsName: "events" }],
+    transpileOpts: {
+      nestedStructs: [
+        {
+          name: "WidgetInputEvents",
+          fields: [
+            { name: "Label", goType: "string", jsName: "label" },
+            { name: "Count", goType: "float64", jsName: "count" },
+          ],
+        },
+      ],
+    },
+  };
+
+  test("a statically typed slice yields the generic ForOf and a typed param", () => {
+    const code = go(
+      `_for_of(input.events, (event) => { _html(\`<li>\${_escape(event.label)}</li>\`); }, 0, 0, "a", 0, 0, 0, "</ul>", 1);`,
+      { imports: ["_for_of", "_escape"], ...eventsInput },
+    );
+    expect(code).toContain(
+      "runtime.ForOf(input.Events, func(event WidgetInputEvents) {",
+    );
+    // The loop var's type is in scope, so field access resolves to a real
+    // Go struct field rather than needing an assertion.
+    expect(code).toContain("runtime.Escape(event.Label)");
+    expect(code).toContain(`w.HTML("</ul>")`);
+  });
+
+  test("a second callback param becomes ForOfIndexed with an int index", () => {
+    const code = go(
+      `_for_of(input.events, (event, i) => { _html(\`<li>\${_escape(i)}\${_escape(event.count)}</li>\`); }, 0, 0, "a", 0, 0, 0, "", 1);`,
+      { imports: ["_for_of", "_escape"], ...eventsInput },
+    );
+    expect(code).toContain(
+      "runtime.ForOfIndexed(input.Events, func(event WidgetInputEvents, i int) {",
+    );
+    expect(code).toContain("runtime.Escape(event.Count)");
+  });
+
+  test("a []string field also gets the generic form", () => {
+    const code = go(
+      `_for_of(input.items, (item) => { _html(\`<li>\${_escape(item)}</li>\`); }, 0, 0, "a", 0, 0, 0, "", 1);`,
+      {
+        imports: ["_for_of", "_escape"],
+        inputFields: [{ name: "Items", goType: "[]string", jsName: "items" }],
+      },
+    );
+    expect(code).toContain("runtime.ForOf(input.Items, func(item string) {");
+  });
+
+  test("an unknown element type falls back to the reflective *Any helpers", () => {
+    const anyField = {
+      inputFields: [{ name: "Things", goType: "[]any", jsName: "things" }],
+    };
+    const one = go(
+      `_for_of(input.things, (thing) => { _html("<li>"); }, 0, 0, "a", 0, 0, 0, "", 1);`,
+      { imports: ["_for_of"], ...anyField },
+    );
+    expect(one).toContain("runtime.ForOfAny(input.Things, func(thing any) {");
+    const two = go(
+      `_for_of(input.things, (thing, i) => { _html("<li>"); }, 0, 0, "a", 0, 0, 0, "", 1);`,
+      { imports: ["_for_of"], ...anyField },
+    );
+    expect(two).toContain("runtime.ForOfIndexedAny(input.Things, func(thing any, i int) {");
+  });
+
+  test("an untyped source (no Input field at all) also falls back", () => {
+    const code = go(
+      `_for_of(input.mystery, (x) => { _html("<li>"); }, 0, 0, "a", 0, 0, 0, "", 1);`,
+      { imports: ["_for_of"] },
+    );
+    expect(code).toContain("runtime.ForOfAny(input.Mystery, func(x any) {");
+  });
+
+  test("nested loops infer through the outer loop variable's struct", () => {
+    const code = go(
+      `_for_of(input.groups, (group) => {
+         _for_of(group.rows, (row) => { _html(\`<li>\${_escape(row.name)}</li>\`); }, 0, 0, "b", 0, 0, 0, "", 1);
+       }, 0, 0, "a", 0, 0, 0, "", 1);`,
+      {
+        imports: ["_for_of", "_escape"],
+        inputFields: [{ name: "Groups", goType: "[]WidgetInputGroups", jsName: "groups" }],
+        transpileOpts: {
+          nestedStructs: [
+            {
+              name: "WidgetInputGroups",
+              fields: [{ name: "Rows", goType: "[]WidgetInputGroupsRows", jsName: "rows" }],
+            },
+            {
+              name: "WidgetInputGroupsRows",
+              fields: [{ name: "Name", goType: "string", jsName: "name" }],
+            },
+          ],
+        },
+      },
+    );
+    expect(code).toContain("runtime.ForOf(input.Groups, func(group WidgetInputGroups) {");
+    expect(code).toContain(
+      "runtime.ForOf(group.Rows, func(row WidgetInputGroupsRows) {",
+    );
+    expect(code).toContain("runtime.Escape(row.Name)");
+  });
+
+  test("a loop variable's type does not leak past its loop", () => {
+    // `item` in the second loop must NOT pick up the first loop's type.
+    const code = go(
+      `_for_of(input.items, (item) => { _html("<a>"); }, 0, 0, "a", 0, 0, 0, "", 1);
+       _for_of(input.things, (item) => { _html("<b>"); }, 0, 0, "b", 0, 0, 0, "", 1);`,
+      {
+        imports: ["_for_of"],
+        inputFields: [
+          { name: "Items", goType: "[]string", jsName: "items" },
+          { name: "Things", goType: "[]any", jsName: "things" },
+        ],
+      },
+    );
+    expect(code).toContain("runtime.ForOf(input.Items, func(item string) {");
+    expect(code).toContain("runtime.ForOfAny(input.Things, func(item any) {");
+  });
+
+  test("three callback params are still rejected", () => {
+    expect(() =>
+      go(`_for_of(input.items, (a, b, c) => { _html("x"); }, 0, 0, "a", 0, 0, 0, "", 1);`, {
+        imports: ["_for_of"],
+      }),
+    ).toThrow(UnsupportedError);
+  });
+
+  test("nested Input structs are emitted after the Input struct", () => {
+    const code = go(`_html("<p>x</p>");`, eventsInput);
+    expect(code).toContain(
+      "type WidgetInput struct {\n\tEvents []WidgetInputEvents\n}",
+    );
+    expect(code).toContain(
+      "type WidgetInputEvents struct {\n\tLabel string\n\tCount float64\n}",
+    );
+    expect(code.indexOf("type WidgetInput struct")).toBeLessThan(
+      code.indexOf("type WidgetInputEvents struct"),
+    );
+  });
+});
+
+describe("value-position logical operators", () => {
+  test("`i === 0 && \"cls\"` in a class array becomes runtime.And", () => {
+    // JS && returns an OPERAND, not a bool: the array entry is either false
+    // (skipped by AttrClass) or the class string.
+    const code = go(
+      `_html(\`<li\${_attr_class(["base", i === 0 && "bg-accent/50 font-medium"])}>\`);`,
+      { imports: ["_attr_class"] },
+    );
+    expect(code).toContain(
+      `runtime.AttrClass([]any{"base", runtime.And(i == 0, "bg-accent/50 font-medium")})`,
+    );
+  });
+
+  test("`||` with a non-boolean operand becomes runtime.OrValue", () => {
+    const code = go(`_html(\`<p>\${_escape(input.title || "untitled")}</p>\`);`, {
+      imports: ["_escape"],
+      inputFields: [{ name: "Title", goType: "string", jsName: "title" }],
+    });
+    expect(code).toContain(`runtime.OrValue(input.Title, "untitled")`);
+  });
+
+  test("both operands boolean-shaped keeps the native Go operator", () => {
+    const code = go(`_if(() => { if (input.a === 1 && !input.b) { _html("<p>y</p>"); } });`, {
+      imports: ["_if"],
+    });
+    expect(code).toContain("if runtime.Truthy(input.A == 1 && !input.B) {");
+    expect(code).not.toContain("runtime.And");
+  });
+
+  test("a bool-typed Input field counts as boolean-shaped", () => {
+    const code = go(`_if(() => { if (input.open || input.pinned) { _html("<p>y</p>"); } });`, {
+      imports: ["_if"],
+      inputFields: [
+        { name: "Open", goType: "bool", jsName: "open" },
+        { name: "Pinned", goType: "bool", jsName: "pinned" },
+      ],
+    });
+    expect(code).toContain("input.Open || input.Pinned");
+    expect(code).not.toContain("runtime.OrValue");
+  });
+
+  test("?? still maps to runtime.Or, not OrValue", () => {
+    const code = go(`_html(\`<p>\${_escape(input.title ?? "fallback")}</p>\`);`, {
+      imports: ["_escape"],
+    });
+    expect(code).toContain(`runtime.Or(input.Title, "fallback")`);
+    expect(code).not.toContain("runtime.OrValue");
+  });
+
+  test("a mixed chain nests And/OrValue left-associatively", () => {
+    const code = go(`_html(\`<p>\${_escape(input.a && input.b || "z")}</p>\`);`, {
+      imports: ["_escape"],
+    });
+    expect(code).toContain(`runtime.OrValue(runtime.And(input.A, input.B), "z")`);
+  });
+});

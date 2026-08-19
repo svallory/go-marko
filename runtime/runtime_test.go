@@ -41,15 +41,38 @@ func TestWriterHTML(t *testing.T) {
 	}
 }
 
+// event mirrors a nested Input struct generated from an inline TS object
+// type (`events: { label: string; count: number }[]` -> CounterInputEvents):
+// the case typed loops exist for, where the callback needs a concrete struct
+// so `item.Label` resolves as a field.
+type event struct {
+	Label string
+	Count float64
+}
+
 func TestForOf(t *testing.T) {
-	t.Run("typed string slice", func(t *testing.T) {
+	t.Run("typed string slice yields concrete strings", func(t *testing.T) {
 		w := New()
-		ForOf([]string{"a", "b", "c"}, func(item any) {
+		ForOf([]string{"a", "b", "c"}, func(item string) {
 			w.HTML("<li>")
 			w.HTML(Escape(item))
 			w.HTML("</li>")
 		})
 		if got, want := w.String(), "<li>a</li><li>b</li><li>c</li>"; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("slice of structs yields concrete structs", func(t *testing.T) {
+		w := New()
+		ForOf([]event{{Label: "you clicked", Count: 1}, {Label: "someone", Count: 4}}, func(item event) {
+			// Field access, not a type assertion -- the whole point.
+			w.HTML(Escape(item.Label))
+			w.HTML("=")
+			w.HTML(Escape(item.Count))
+			w.HTML(" ")
+		})
+		if got, want := w.String(), "you clicked=1 someone=4 "; got != want {
 			t.Errorf("got %q, want %q", got, want)
 		}
 	})
@@ -66,22 +89,10 @@ func TestForOf(t *testing.T) {
 		}
 	})
 
-	t.Run("nil is a no-op", func(t *testing.T) {
-		w := New()
-		called := false
-		ForOf(nil, func(item any) { called = true })
-		if called {
-			t.Error("fn should not be called for nil items")
-		}
-		if got := w.String(); got != "" {
-			t.Errorf("got %q, want empty", got)
-		}
-	})
-
 	t.Run("nil typed slice is a no-op", func(t *testing.T) {
 		var items []string
 		called := false
-		ForOf(items, func(item any) { called = true })
+		ForOf(items, func(item string) { called = true })
 		if called {
 			t.Error("fn should not be called for a nil typed slice")
 		}
@@ -89,29 +100,9 @@ func TestForOf(t *testing.T) {
 
 	t.Run("empty slice is a no-op", func(t *testing.T) {
 		called := false
-		ForOf([]string{}, func(item any) { called = true })
+		ForOf([]string{}, func(item string) { called = true })
 		if called {
 			t.Error("fn should not be called for an empty slice")
-		}
-	})
-
-	t.Run("non-slice value is a no-op", func(t *testing.T) {
-		// JS semantics: iterating a non-array (e.g. a plain number or
-		// string) renders nothing rather than panicking.
-		called := false
-		ForOf(42, func(item any) { called = true })
-		if called {
-			t.Error("fn should not be called for a non-slice value")
-		}
-	})
-
-	t.Run("array type iterates", func(t *testing.T) {
-		w := New()
-		ForOf([3]int{1, 2, 3}, func(item any) {
-			w.HTML(Escape(item))
-		})
-		if got, want := w.String(), "123"; got != want {
-			t.Errorf("got %q, want %q", got, want)
 		}
 	})
 }
@@ -119,7 +110,7 @@ func TestForOf(t *testing.T) {
 func TestForOfIndexed(t *testing.T) {
 	t.Run("typed slice with index", func(t *testing.T) {
 		w := New()
-		ForOfIndexed([]string{"a", "b", "c"}, func(item any, i int) {
+		ForOfIndexed([]string{"a", "b", "c"}, func(item string, i int) {
 			w.HTML(Escape(i))
 			w.HTML(":")
 			w.HTML(Escape(item))
@@ -130,11 +121,22 @@ func TestForOfIndexed(t *testing.T) {
 		}
 	})
 
-	t.Run("nil is a no-op", func(t *testing.T) {
+	t.Run("index drives a first-item class, as in the counter page", func(t *testing.T) {
+		w := New()
+		ForOfIndexed([]event{{Label: "a"}, {Label: "b"}}, func(item event, i int) {
+			w.HTML(AttrClass([]any{"row", And(i == 0, "first")}))
+		})
+		if got, want := w.String(), ` class="row first" class=row`; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("nil typed slice is a no-op", func(t *testing.T) {
+		var items []event
 		called := false
-		ForOfIndexed(nil, func(item any, i int) { called = true })
+		ForOfIndexed(items, func(item event, i int) { called = true })
 		if called {
-			t.Error("fn should not be called for nil items")
+			t.Error("fn should not be called for a nil typed slice")
 		}
 	})
 
@@ -143,6 +145,128 @@ func TestForOfIndexed(t *testing.T) {
 		ForOfIndexed([]any{}, func(item any, i int) { called = true })
 		if called {
 			t.Error("fn should not be called for an empty slice")
+		}
+	})
+}
+
+func TestForOfAny(t *testing.T) {
+	t.Run("walks a typed slice reflectively", func(t *testing.T) {
+		w := New()
+		ForOfAny([]string{"a", "b", "c"}, func(item any) {
+			w.HTML("<li>")
+			w.HTML(Escape(item))
+			w.HTML("</li>")
+		})
+		if got, want := w.String(), "<li>a</li><li>b</li><li>c</li>"; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("[]any slice", func(t *testing.T) {
+		w := New()
+		ForOfAny([]any{"a & b", 1, true}, func(item any) {
+			w.HTML(Escape(item))
+			w.HTML(" ")
+		})
+		if got, want := w.String(), "a &amp; b 1 true "; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("nil is a no-op", func(t *testing.T) {
+		called := false
+		ForOfAny(nil, func(item any) { called = true })
+		if called {
+			t.Error("fn should not be called for nil items")
+		}
+	})
+
+	t.Run("nil typed slice is a no-op", func(t *testing.T) {
+		var items []string
+		called := false
+		ForOfAny(items, func(item any) { called = true })
+		if called {
+			t.Error("fn should not be called for a nil typed slice")
+		}
+	})
+
+	t.Run("empty slice is a no-op", func(t *testing.T) {
+		called := false
+		ForOfAny([]string{}, func(item any) { called = true })
+		if called {
+			t.Error("fn should not be called for an empty slice")
+		}
+	})
+
+	t.Run("non-slice value is a no-op", func(t *testing.T) {
+		// JS semantics: iterating a non-array (e.g. a plain number or
+		// string) renders nothing rather than panicking.
+		called := false
+		ForOfAny(42, func(item any) { called = true })
+		if called {
+			t.Error("fn should not be called for a non-slice value")
+		}
+	})
+
+	t.Run("array type iterates", func(t *testing.T) {
+		w := New()
+		ForOfAny([3]int{1, 2, 3}, func(item any) {
+			w.HTML(Escape(item))
+		})
+		if got, want := w.String(), "123"; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("struct elements arrive boxed, needing an assertion", func(t *testing.T) {
+		w := New()
+		ForOfAny([]event{{Label: "x"}}, func(item any) {
+			w.HTML(Escape(item.(event).Label))
+		})
+		if got, want := w.String(), "x"; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+}
+
+func TestForOfIndexedAny(t *testing.T) {
+	t.Run("typed slice with index", func(t *testing.T) {
+		w := New()
+		ForOfIndexedAny([]string{"a", "b"}, func(item any, i int) {
+			w.HTML(Escape(i))
+			w.HTML(":")
+			w.HTML(Escape(item))
+			w.HTML(" ")
+		})
+		if got, want := w.String(), "0:a 1:b "; got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("nil is a no-op", func(t *testing.T) {
+		called := false
+		ForOfIndexedAny(nil, func(item any, i int) { called = true })
+		if called {
+			t.Error("fn should not be called for nil items")
+		}
+	})
+
+	t.Run("non-slice value is a no-op", func(t *testing.T) {
+		called := false
+		ForOfIndexedAny("abc", func(item any, i int) { called = true })
+		if called {
+			t.Error("fn should not be called for a non-slice value")
+		}
+	})
+
+	t.Run("array type iterates with indices", func(t *testing.T) {
+		w := New()
+		ForOfIndexedAny([2]string{"x", "y"}, func(item any, i int) {
+			w.HTML(Escape(i))
+			w.HTML(Escape(item))
+		})
+		if got, want := w.String(), "0x1y"; got != want {
+			t.Errorf("got %q, want %q", got, want)
 		}
 	})
 }

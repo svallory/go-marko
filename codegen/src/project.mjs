@@ -55,11 +55,21 @@ export function findGoModule(dir) {
   }
 }
 
-/** Read `fields`/`inputFields` for a template file, shared by project + vendor entries. */
-function readTemplateFields(file) {
+/**
+ * Read `fields`/`inputFields` for a template file, shared by project + vendor
+ * entries. `pascalName` roots the names of any structs generated for inline
+ * object types in the interface (`CounterInput.events` -> `CounterInputEvents`),
+ * so it has to be known before the fields are parsed.
+ */
+function readTemplateFields(file, pascalName) {
   const source = fs.readFileSync(file, "utf8");
-  const fields = parseInputInterface(source, file);
-  return { source, fields, inputFields: new Map(fields.map((f) => [f.name, f.goType])) };
+  const fields = parseInputInterface(source, file, `${pascalName}Input`);
+  return {
+    source,
+    fields,
+    nestedStructs: fields.nested,
+    inputFields: new Map(fields.map((f) => [f.name, f.goType])),
+  };
 }
 
 /**
@@ -75,16 +85,17 @@ export function buildRegistry(root, { modulePath, moduleRoot }) {
     const dir = path.dirname(file);
     const relDir = path.relative(moduleRoot, dir).split(path.sep).join("/");
     const kebab = path.basename(file, ".marko");
+    const pascalName = pascalCase(kebab);
     registry.set(file, {
       markoPath: file,
       dir,
       kebab,
-      pascalName: pascalCase(kebab),
+      pascalName,
       pkgName: sanitizePackageName(path.basename(dir)),
       goImportPath: relDir === "" ? modulePath : `${modulePath}/${relDir}`,
       outPath: path.join(dir, `${kebab}.marko.go`),
       vendor: false,
-      ...readTemplateFields(file),
+      ...readTemplateFields(file, pascalName),
     });
   }
   return registry;
@@ -188,7 +199,7 @@ export function addVendorTemplate(
     goImportPath: `${modulePath}/${MARKO_MODULES_DIR}/${sanitizedPkg}`,
     outPath: path.join(outDir, `${outBase}.marko.go`),
     vendor: true,
-    ...readTemplateFields(hit.file),
+    ...readTemplateFields(hit.file, pascalName),
   };
   registry.set(hit.file, entry);
   return entry;
@@ -197,11 +208,14 @@ export function addVendorTemplate(
 /**
  * Generate Go for every template under `root`.
  *
- * One-shot mode is fail-fast: the first bad template aborts the run and the
- * CLI exits non-zero. Watch mode passes `bestEffort` instead, which keeps
- * going past a broken file (leaving its previously generated .go on disk)
- * and returns the failures for the caller to print -- a typo mid-edit must
- * never take the watcher down.
+ * Without `bestEffort` the first bad template aborts the run by throwing.
+ * With it, per-template errors are collected and generation continues past a
+ * broken file (leaving its previously generated .go on disk), so the caller
+ * can report ALL of them. Both the CLI's one-shot mode and watch mode use
+ * `bestEffort`: a batch run should not make fixing N broken templates take N
+ * runs, and a typo mid-edit must never take the watcher down. Failures that
+ * aren't attributable to one template (a missing go.mod, a bad root) still
+ * throw either way.
  *
  * @param {string} root directory to walk
  * @param {{write?: boolean, bestEffort?: boolean}} [opts] when write is
@@ -301,6 +315,7 @@ export async function generateProject(root, { write = true, bestEffort = false }
       templateName: entry.kebab,
       pascalName: entry.pascalName,
       inputFields: entry.fields,
+      nestedStructs: entry.nestedStructs,
       resolveTag,
     });
 

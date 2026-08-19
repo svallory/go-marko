@@ -18,6 +18,7 @@ let uiDir;
 let files; // outPath -> generated Go source
 
 const EXPECTED = [
+  ["pages/counter.marko.go", "pages", "Counter"],
   ["pages/landing.marko.go", "pages", "Landing"],
   ["tags/elements/ui-button.marko.go", "elements", "UiButton"],
   ["tags/icons/icon-book.marko.go", "icons", "IconBook"],
@@ -53,7 +54,7 @@ function src(rel) {
 }
 
 describe("generate over the quickstart fixture", () => {
-  test("emits one .marko.go next to each of the 9 templates", () => {
+  test("emits one .marko.go next to each of the 10 templates", () => {
     expect([...files.keys()].sort()).toEqual(EXPECTED.map(([rel]) => rel).sort());
     for (const [rel] of EXPECTED) {
       expect(fs.existsSync(path.join(uiDir, rel))).toBe(true);
@@ -194,7 +195,7 @@ describe("generate over the quickstart fixture", () => {
 describe("project plumbing", () => {
   test("findMarkoFiles walks recursively and sorts", () => {
     const found = findMarkoFiles(uiDir).map((f) => path.relative(uiDir, f));
-    expect(found).toHaveLength(9);
+    expect(found).toHaveLength(10);
     expect(found).toEqual([...found].sort());
   });
 

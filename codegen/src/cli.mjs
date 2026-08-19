@@ -22,7 +22,7 @@ flags:
   -h, --help              show this help
 
 examples:
-  # one-shot: generate and exit (non-zero on any template error)
+  # one-shot: generate and exit (reports every failing template, non-zero)
   marko-go generate ./ui
 
   # watch: regenerate, restart the server, live-reload the browser
@@ -122,16 +122,39 @@ export function parseArgs(argv) {
   return out;
 }
 
-/** One-shot generate: print each file, then a summary. Fail-fast. */
+/**
+ * One-shot generate: print each generated file, then a summary.
+ *
+ * Errors are collected across the WHOLE project rather than aborting on the
+ * first bad template, and each one is prefixed with the source .marko path
+ * relative to the generate root -- exactly like watch mode. A batch run that
+ * reported only the first failure would make fixing N broken templates take N
+ * runs, and an unprefixed "unsupported Marko feature: …" gives no clue which
+ * of the project's templates to open. The run still exits non-zero.
+ *
+ * @returns {Promise<number>} process exit code
+ */
 async function generateOnce(dir) {
-  const results = await generateProject(dir);
   const root = path.resolve(dir);
+  const { results, errors } = await generateProject(dir, { bestEffort: true });
   for (const r of results) {
     console.log(`  ${path.relative(root, r.outPath)}`);
+  }
+  if (errors.length) {
+    for (const { markoPath, error } of errors) {
+      console.error(`marko-go: ${path.relative(root, markoPath)}: ${error.message}`);
+    }
+    console.error(
+      `marko-go: ${errors.length} of ${results.length + errors.length} template${
+        results.length + errors.length === 1 ? "" : "s"
+      } failed`,
+    );
+    return 1;
   }
   console.log(
     `marko-go: generated ${results.length} file${results.length === 1 ? "" : "s"} from ${root}`,
   );
+  return 0;
 }
 
 export async function main(argv) {
@@ -160,8 +183,7 @@ export async function main(argv) {
       });
       return 0;
     }
-    await generateOnce(opts.dir);
-    return 0;
+    return await generateOnce(opts.dir);
   } catch (err) {
     if (err instanceof UnsupportedError) {
       console.error(`marko-go: ${err.message}`);

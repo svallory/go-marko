@@ -73,6 +73,10 @@ const HANDLED = new Set([
  * @param {string} opts.templateName kebab basename, e.g. "ui-button"
  * @param {string} opts.pascalName   e.g. "UiButton"
  * @param {{name,goType}[]} [opts.inputFields] parsed from `interface Input`
+ * @param {{name: string, fields: object[]}[]} [opts.nestedStructs] extra
+ *        named structs generated for inline object types in `interface Input`
+ *        (see inputstruct.mjs's nestedStructName). Emitted alongside the Input
+ *        struct, and used by the type inferencer to type loop variables.
  * @param {(spec: string) => ({pkgName,pascalName,goImportPath,sameDir}|null)} [opts.resolveTag]
  *        maps a `.marko` import specifier (relative to this file) to the
  *        registry entry for the template it names. Required for any file
@@ -85,6 +89,7 @@ export function transpile(jsSource, opts) {
     templateName,
     pascalName,
     inputFields = [],
+    nestedStructs = [],
     resolveTag = () => null,
   } = opts;
 
@@ -92,6 +97,88 @@ export function transpile(jsSource, opts) {
   const constPrefix = camelCase(templateName);
   const structName = `${pascalName}Input`;
   const inputFieldTypes = new Map(inputFields.map((f) => [f.name, f.goType]));
+
+  // ---- Minimal Go type inference -------------------------------------
+  //
+  // The compiled JS carries no types, but the template's own
+  // `export interface Input` does, and inputstruct.mjs has already mapped it
+  // to Go types -- including named structs for inline object types. That is
+  // enough to type the one place where it matters: a for-of loop's element.
+  //
+  // `input.events` is known to be `[]CounterInputEvents`, so the loop can be
+  // emitted as `runtime.ForOfIndexed(input.events, func(event CounterInputEvents, i int))`
+  // -- which makes `event.Label` resolve to a real struct field instead of
+  // needing a runtime type assertion. The loop variable's type is then in
+  // scope for nested loops (`for|tag| of=event.tags`), so inference composes.
+  //
+  // Everything here is best-effort: an unknown type is `null`, and every
+  // consumer has a working `any`-shaped fallback (ForOfAny et al). We never
+  // guess -- a wrong Go type would be a compile error at best and wrong
+  // output at worst.
+
+  /** Go struct name -> Map(goFieldName -> goType), for nested Input structs. */
+  const structFieldTypes = new Map(
+    nestedStructs.map((s) => [s.name, new Map(s.fields.map((f) => [f.name, f.goType]))]),
+  );
+
+  /** Lexical scope of locally-typed identifiers (loop vars), innermost last. */
+  const typeScopes = [new Map()];
+  const lookupLocalType = (name) => {
+    for (let i = typeScopes.length - 1; i >= 0; i--) {
+      if (typeScopes[i].has(name)) return typeScopes[i].get(name);
+    }
+    return null;
+  };
+
+  /**
+   * Best-effort Go type of a JS expression, or null when unknown.
+   * Deliberately covers only what the fixture space needs: the input
+   * identifier, member access into Input/nested structs, and loop variables.
+   */
+  function inferGoType(node) {
+    if (t.isIdentifier(node)) {
+      if (node.name === inputParamName) return structName;
+      return lookupLocalType(node.name);
+    }
+    if (t.isMemberExpression(node) && !node.computed && t.isIdentifier(node.property)) {
+      if (node.property.name === "length") return "int"; // len(...)
+      const objType = inferGoType(node.object);
+      if (!objType) return null;
+      const fieldName = capitalize(node.property.name);
+      if (objType === structName) return inputFieldTypes.get(fieldName) ?? null;
+      return structFieldTypes.get(objType)?.get(fieldName) ?? null;
+    }
+    return null;
+  }
+
+  /** `[]T` -> `T`; anything else (including `[]any`) -> null. */
+  function sliceElemType(goType) {
+    if (!goType || !goType.startsWith("[]")) return null;
+    const elem = goType.slice(2);
+    return elem === "any" ? null : elem;
+  }
+
+  /**
+   * Whether an expression is already a Go `bool`, which decides whether a
+   * `&&`/`||` can stay a native Go operator or has to become the
+   * value-returning runtime.And/runtime.OrValue. Comparisons, negations and
+   * boolean literals are bool; a string, a number, or an unknown expression
+   * is not.
+   */
+  function isBooleanShaped(node) {
+    if (t.isBooleanLiteral(node)) return true;
+    if (t.isUnaryExpression(node) && node.operator === "!") return true;
+    if (t.isBinaryExpression(node)) {
+      return ["==", "!=", "===", "!==", "<", "<=", ">", ">=", "in", "instanceof"].includes(
+        node.operator,
+      );
+    }
+    if (t.isLogicalExpression(node) && node.operator !== "??") {
+      return isBooleanShaped(node.left) && isBooleanShaped(node.right);
+    }
+    if (t.isParenthesizedExpression?.(node)) return isBooleanShaped(node.expression);
+    return inferGoType(node) === "bool";
+  }
 
   // 1. Imports. Two flavours appear in compiled output:
   //    a) `import {_html, ...} from "@marko/runtime-tags/html"` -- intrinsics.
@@ -267,7 +354,22 @@ export function transpile(jsSource, opts) {
         // documented on runtime.Or itself.
         return `runtime.Or(${translateExpr(node.left)}, ${translateExpr(node.right)})`;
       }
-      return `${translateExpr(node.left)} ${node.operator} ${translateExpr(node.right)}`;
+      // JS `&&`/`||` are NOT boolean operators: they return one of their
+      // OPERANDS. That's load-bearing in value position -- e.g. a class array
+      // entry `i === 0 && "bg-accent/50 font-medium"`, which is either `false`
+      // (skipped by AttrClass) or the class string, never a bool.
+      //
+      // Go's `&&`/`||` only accept and produce bools, so the operand-returning
+      // form goes through runtime.And / runtime.OrValue, which are exact JS
+      // semantics over `any`. When BOTH operands are already boolean-shaped
+      // (comparisons, negations, boolean literals) the two agree, and the
+      // plain Go operator is emitted -- it reads better and keeps `<if=a && b>`
+      // tests usable as native conditions.
+      if (isBooleanShaped(node.left) && isBooleanShaped(node.right)) {
+        return `${translateExpr(node.left)} ${node.operator} ${translateExpr(node.right)}`;
+      }
+      const fn = node.operator === "&&" ? "runtime.And" : "runtime.OrValue";
+      return `${fn}(${translateExpr(node.left)}, ${translateExpr(node.right)})`;
     }
     if (t.isUnaryExpression(node) && node.operator === "!") {
       return `!${translateExpr(node.argument)}`;
@@ -429,16 +531,52 @@ export function transpile(jsSource, opts) {
     if (!(t.isArrowFunctionExpression(cb) || t.isFunctionExpression(cb))) {
       throw new UnsupportedError("for-of callback is not a function", node);
     }
-    if (cb.params.length > 1 || (cb.params[0] && !t.isIdentifier(cb.params[0]))) {
+    // `<for|item| of=…>` gives one param; `<for|item, i| of=…>` gives two
+    // (the index). Marko allows a third (the whole list), which nothing in
+    // the ported subset needs yet.
+    if (cb.params.length > 2 || cb.params.some((p) => !t.isIdentifier(p))) {
       throw new UnsupportedError(
         "destructured for-loop parameters are not supported yet -- name the item and access fields as item.Field",
         cb,
       );
     }
     const itemName = cb.params[0]?.name ?? "_item";
-    const body = translateBlockStatements(cb.body.body);
+    const indexName = cb.params[1]?.name ?? null;
+
+    // Type the loop variable from the source expression when we can: an
+    // `input.events` typed `[]CounterInputEvents` yields a callback taking a
+    // concrete CounterInputEvents, so `event.Label` type-checks. Otherwise
+    // fall back to the reflective *Any runtime helpers over `any`.
+    const elemType = sliceElemType(inferGoType(itemsArg));
+    const goItemType = elemType ?? "any";
+    const fnName = elemType
+      ? indexName
+        ? "runtime.ForOfIndexed"
+        : "runtime.ForOf"
+      : indexName
+        ? "runtime.ForOfIndexedAny"
+        : "runtime.ForOfAny";
+
+    // The loop variable's type is in scope for the body only, so nested
+    // loops over a field of the item infer correctly and siblings don't leak.
+    typeScopes.push(
+      new Map([
+        [itemName, goItemType],
+        ...(indexName ? [[indexName, "int"]] : []),
+      ]),
+    );
+    let body;
+    try {
+      body = translateBlockStatements(cb.body.body);
+    } finally {
+      typeScopes.pop();
+    }
+
+    const params = indexName
+      ? `${itemName} ${goItemType}, ${indexName} int`
+      : `${itemName} ${goItemType}`;
     const out = [
-      `runtime.ForOf(${translateExpr(itemsArg)}, func(${itemName} any) {`,
+      `${fnName}(${translateExpr(itemsArg)}, func(${params}) {`,
       indent(body),
       `})`,
     ];
@@ -593,6 +731,12 @@ export function transpile(jsSource, opts) {
       const lines = [];
       for (const decl of node.declarations) {
         if (decl.init && isResumeOnlyCall(decl.init)) continue; // dropped
+        // `const $input_events__closures = new Set();` -- the compiler's
+        // per-signal closure registry. It exists only so `_subscribe` can
+        // wire up client-side re-renders, and every consumer of it is itself
+        // RESUME_ONLY, so on a server-only fresh mount the whole set is dead.
+        // Dropped for the same reason as the resume-only calls above.
+        if (decl.init && t.isNewExpression(decl.init)) continue;
         if (!t.isIdentifier(decl.id)) {
           throw new UnsupportedError("destructuring assignment is not supported yet", node);
         }
@@ -708,6 +852,12 @@ export function transpile(jsSource, opts) {
     parts.push(moduleConstDecls.join("\n\n"), "");
   }
   parts.push(renderInputStruct(structName, inputFields), "");
+  // Structs generated for inline object types in `interface Input`, named
+  // <OuterStruct><Field> (CounterInput.events -> CounterInputEvents). Emitted
+  // after the Input struct that references them, in declaration order.
+  for (const s of nestedStructs) {
+    parts.push(renderInputStruct(s.name, s.fields), "");
+  }
   parts.push(
     `// ${pascalName} renders the ${templateName}.marko template into w.`,
     `func ${pascalName}(w *runtime.Writer, input ${structName}) {`,

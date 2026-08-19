@@ -5,6 +5,7 @@ import {
   renderInputStruct,
   sliceStatementSection,
   goFieldName,
+  nestedStructName,
 } from "../src/inputstruct.mjs";
 import { parse } from "@babel/parser";
 
@@ -169,6 +170,121 @@ describe("renderInputStruct", () => {
     ]);
     expect(go).toBe(
       "type XInput struct {\n\tTitle   string\n\tContent runtime.Body\n}",
+    );
+  });
+});
+
+describe("nested Input structs (FR3)", () => {
+  /** Convenience: parse an interface body and return [fields, nested]. */
+  function parseNested(body, owner = "CounterInput") {
+    const fields = parseInputInterface(
+      `export interface Input {${body}}\n<div/>`,
+      "<test>",
+      owner,
+    );
+    return [fields, fields.nested];
+  }
+
+  test("naming convention: outer struct + PascalCase field, no depluralization", () => {
+    expect(nestedStructName("CounterInput", "events")).toBe("CounterInputEvents");
+    expect(nestedStructName("CounterInput", "user")).toBe("CounterInputUser");
+    // A kebab attribute name still goes through goFieldName.
+    expect(nestedStructName("FooInput", "data-thing")).toBe("FooInputDataThing");
+  });
+
+  test("array of inline objects: []CounterInputEvents plus the struct", () => {
+    const [fields, nested] = parseNested(
+      " events: { label: string; count: number }[];",
+    );
+    expect(fields.map((f) => [f.name, f.goType])).toEqual([
+      ["Events", "[]CounterInputEvents"],
+    ]);
+    expect(nested).toEqual([
+      {
+        name: "CounterInputEvents",
+        fields: [
+          { jsName: "label", name: "Label", goType: "string", optional: false },
+          { jsName: "count", name: "Count", goType: "float64", optional: false },
+        ],
+      },
+    ]);
+  });
+
+  test("non-array inline object becomes a plain named struct field", () => {
+    const [fields, nested] = parseNested(" user: { name: string };");
+    expect(fields.map((f) => [f.name, f.goType])).toEqual([["User", "CounterInputUser"]]);
+    expect(nested.map((s) => s.name)).toEqual(["CounterInputUser"]);
+    expect(nested[0].fields.map((f) => [f.name, f.goType])).toEqual([["Name", "string"]]);
+  });
+
+  test("deep nesting re-roots the name at each level", () => {
+    const [fields, nested] = parseNested(
+      " bar: { baz: { qux: string }[] };",
+      "FooInput",
+    );
+    expect(fields.map((f) => [f.name, f.goType])).toEqual([["Bar", "FooInputBar"]]);
+    // Declaration order follows the order names are reserved, outermost first.
+    expect(nested.map((s) => s.name)).toEqual(["FooInputBar", "FooInputBarBaz"]);
+    expect(nested[0].fields.map((f) => [f.name, f.goType])).toEqual([
+      ["Baz", "[]FooInputBarBaz"],
+    ]);
+    expect(nested[1].fields.map((f) => [f.name, f.goType])).toEqual([["Qux", "string"]]);
+  });
+
+  test("several inline objects in one interface each get their own struct", () => {
+    const [fields, nested] = parseNested(
+      " user: { name: string }; events: { label: string }[]; title: string;",
+    );
+    expect(fields.map((f) => [f.name, f.goType])).toEqual([
+      ["User", "CounterInputUser"],
+      ["Events", "[]CounterInputEvents"],
+      ["Title", "string"],
+    ]);
+    expect(nested.map((s) => s.name)).toEqual(["CounterInputUser", "CounterInputEvents"]);
+  });
+
+  test("optional inline object still gets a struct (zero value == absent)", () => {
+    const [fields, nested] = parseNested(" user?: { name: string };");
+    expect(fields[0]).toEqual({
+      jsName: "user",
+      name: "User",
+      goType: "CounterInputUser",
+      optional: true,
+    });
+    expect(nested).toHaveLength(1);
+  });
+
+  test("optional nested members keep their type", () => {
+    const [, nested] = parseNested(" user: { name?: string; age?: number };");
+    expect(nested[0].fields.map((f) => [f.name, f.goType, f.optional])).toEqual([
+      ["Name", "string", true],
+      ["Age", "float64", true],
+    ]);
+  });
+
+  test("an inline object with a method signature degrades to map[string]any", () => {
+    // No faithful Go struct exists, and silently dropping the member would be
+    // worse than the untyped map.
+    const [fields, nested] = parseNested(" user: { name: string; go(): void };");
+    expect(fields[0].goType).toBe("map[string]any");
+    expect(nested).toEqual([]);
+  });
+
+  test("without an owner, inline objects stay map[string]any (pre-FR3 behavior)", () => {
+    const fields = parseInputInterface(
+      `export interface Input { events: { label: string }[]; user: { a: string } }\n<div/>`,
+    );
+    expect(fields.map((f) => [f.name, f.goType])).toEqual([
+      ["Events", "[]any"],
+      ["User", "map[string]any"],
+    ]);
+    expect(fields.nested).toEqual([]);
+  });
+
+  test("nested structs are rendered by renderInputStruct like any other", () => {
+    const [, nested] = parseNested(" events: { label: string; count: number }[];");
+    expect(renderInputStruct(nested[0].name, nested[0].fields)).toBe(
+      "type CounterInputEvents struct {\n\tLabel string\n\tCount float64\n}",
     );
   });
 });

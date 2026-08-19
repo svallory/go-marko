@@ -67,3 +67,80 @@ func TestOr(t *testing.T) {
 		}
 	})
 }
+
+// And/OrValue are the VALUE-position translations of JS `&&`/`||`: unlike
+// Go's boolean operators they return one of their OPERANDS, which is what
+// makes `class=["base", i === 0 && "active"]` work.
+func TestAnd(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b any
+		want any
+	}{
+		// Falsy a short-circuits to a ITSELF, not to false.
+		{"false && string -> false", false, "active", false},
+		{"empty string && string -> empty string", "", "active", ""},
+		{"zero && string -> 0", 0, "active", 0},
+		{"nil && string -> nil", nil, "active", nil},
+		// Truthy a yields b, whatever b is -- including a falsy b.
+		{"true && string -> string", true, "active", "active"},
+		{"comparison && string -> string", 0 == 0, "bg-accent/50", "bg-accent/50"},
+		{"nonzero && string -> string", 3, "active", "active"},
+		{"true && false -> false", true, false, false},
+		{"true && empty -> empty", true, "", ""},
+		{"string && string -> second", "a", "b", "b"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := And(c.a, c.b); got != c.want {
+				t.Errorf("And(%#v, %#v) = %#v, want %#v", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
+func TestOrValue(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b any
+		want any
+	}{
+		// Truthy a wins and is returned as-is.
+		{"string || fallback -> string", "given", "fallback", "given"},
+		{"true || fallback -> true", true, "fallback", true},
+		{"nonzero || fallback -> number", 7, "fallback", 7},
+		// Falsy a yields b, whatever b is.
+		{"empty || fallback -> fallback", "", "fallback", "fallback"},
+		{"zero || fallback -> fallback", 0, "fallback", "fallback"},
+		{"false || fallback -> fallback", false, "fallback", "fallback"},
+		{"nil || fallback -> fallback", nil, "fallback", "fallback"},
+		{"nil || nil -> nil", nil, nil, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := OrValue(c.a, c.b); got != c.want {
+				t.Errorf("OrValue(%#v, %#v) = %#v, want %#v", c.a, c.b, got, c.want)
+			}
+		})
+	}
+}
+
+// OrValue is JS-faithful where Or deliberately is not: Or falls back on the
+// typed ZERO value, OrValue on JS falsiness. They agree on ""/0 but differ in
+// what they return and accept -- documenting that here so a future refactor
+// can't quietly collapse the two.
+func TestOrValueIsNotOr(t *testing.T) {
+	// Or is generic over comparable and returns T; OrValue returns any.
+	if got := Or("", "fallback"); got != "fallback" {
+		t.Errorf(`Or("", "fallback") = %q, want "fallback"`, got)
+	}
+	if got := OrValue("", "fallback"); got != "fallback" {
+		t.Errorf(`OrValue("", "fallback") = %v, want "fallback"`, got)
+	}
+	// A false bool: Or sees the zero value, OrValue sees falsiness -- same
+	// answer here, but OrValue also accepts operands of differing types,
+	// which Or (a single T) cannot express at all.
+	if got := OrValue(false, 42); got != 42 {
+		t.Errorf("OrValue(false, 42) = %v, want 42", got)
+	}
+}

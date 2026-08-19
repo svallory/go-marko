@@ -6,28 +6,47 @@ import "reflect"
 // `<for|item| of=items>` with no `by` key -- no diffing/keying/resume
 // bookkeeping, since this runtime never re-renders in place.
 //
-// items is `any`, not a generic []T, because the generated code has no way
-// to know the element type of a loop's source expression: the transpiler
-// works purely off the compiled Marko JS (see transpile.mjs's translateExpr),
-// which erases all type information, and an Input struct field backing the
-// loop may itself be typed `any` (e.g. an untyped TS field, or a value built
-// up dynamically). So ForOf takes whatever the expression evaluates to and
-// figures out how to walk it at runtime via reflection.
+// This is the *typed* variant, used whenever the transpiler can statically
+// infer the element type of the loop's source expression -- which it can for
+// any expression rooted in an Input field, since the Input struct's Go types
+// come from the template's own `export interface Input` block (see
+// inputstruct.mjs) and are threaded through nested structs and loop
+// variables by transpile.mjs's type inference. A typed loop costs nothing at
+// runtime: it's a plain `for range` over a concrete slice, and the callback
+// receives a concrete T (so `event.Label` type-checks in generated Go).
 //
-// This means every call pays a reflect.ValueOf + Kind check, plus one
-// reflect.Value.Index per element -- slower than a native `for range` over a
-// concrete slice. That cost is accepted deliberately: it's the price of not
-// requiring the codegen pipeline to thread element types through every
-// composition boundary (Input structs, custom tag calls, module consts) just
-// to keep loops on the fast path. If profiling ever shows this matters, the
-// transpiler could special-case loops whose source is a statically known
-// typed slice and emit a native loop instead -- ForOf's `any` signature
-// doesn't preclude that later optimization.
+// When the element type is NOT statically known -- an Input field declared
+// `any`, a `[]any` literal, an expression the inferencer doesn't model --
+// the transpiler emits ForOfAny instead, which walks the value reflectively.
+//
+// A nil slice is a no-op, matching JS semantics where iterating `undefined`
+// renders nothing rather than panicking.
+func ForOf[T any](items []T, fn func(item T)) {
+	for _, item := range items {
+		fn(item)
+	}
+}
+
+// ForOfIndexed is the Go target for `<for|item, i| of=items>` when the
+// element type is statically known. See ForOf.
+func ForOfIndexed[T any](items []T, fn func(item T, i int)) {
+	for i, item := range items {
+		fn(item, i)
+	}
+}
+
+// ForOfAny is the reflection fallback for ForOf: the target for
+// `<for|item| of=items>` when the transpiler cannot infer a concrete element
+// type for `items` (e.g. it's an `any`-typed Input field, or a value built up
+// dynamically). Every call pays a reflect.ValueOf + Kind check plus one
+// reflect.Value.Index per element; that cost only applies to loops that
+// genuinely have no static type, and is the price of accepting `any` rather
+// than refusing to compile the template.
 //
 // items may be a slice, an array, or nil. A nil or non-slice/array items
 // value is a no-op: this matches JS semantics, where iterating `undefined`
 // or a non-array value renders nothing rather than panicking.
-func ForOf(items any, fn func(item any)) {
+func ForOfAny(items any, fn func(item any)) {
 	v := reflectSliceOrArray(items)
 	if !v.IsValid() {
 		return
@@ -38,9 +57,8 @@ func ForOf(items any, fn func(item any)) {
 	}
 }
 
-// ForOfIndexed is the Go target for `<for|item, i| of=items>`. See ForOf's
-// doc comment for why items is `any` and the reflection cost this implies.
-func ForOfIndexed(items any, fn func(item any, i int)) {
+// ForOfIndexedAny is the reflection fallback for ForOfIndexed. See ForOfAny.
+func ForOfIndexedAny(items any, fn func(item any, i int)) {
 	v := reflectSliceOrArray(items)
 	if !v.IsValid() {
 		return

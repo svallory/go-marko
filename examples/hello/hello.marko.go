@@ -15,7 +15,7 @@ func Hello(w *runtime.Writer, input HelloInput) {
 	w.HTML("!</h1>")
 	if runtime.Truthy(len(input.Items)) {
 		w.HTML("<ul>")
-		runtime.ForOf(input.Items, func(item any) {
+		runtime.ForOf(input.Items, func(item string) {
 			w.HTML("<li>")
 			w.HTML(runtime.Escape(item))
 			w.HTML("</li>")

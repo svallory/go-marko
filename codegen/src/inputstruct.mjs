@@ -39,8 +39,17 @@ export function sliceStatementSection(source) {
  * we can't type still round-trips through runtime.Escape/Truthy, so `any`
  * is safe. (Unsupported *markup* still fails fast -- that's where wrong Go
  * would actually be silently wrong.)
+ *
+ * @param node TS type annotation node
+ * @param {{owner: string, field: string, nested: Map<string,object[]>}} [ctx]
+ *   When present, an inline object type (`{ label: string }`) is emitted as a
+ *   NAMED Go struct instead of `map[string]any` -- see nestedStructName for
+ *   the naming rule. `ctx.nested` collects `structName -> fields[]` for every
+ *   struct generated this way, including deeper levels (recursion re-roots
+ *   `owner` at the struct just named). Without ctx the old `map[string]any`
+ *   mapping applies, which is what a bare `goTypeForTS(type)` call gets.
  */
-export function goTypeForTS(node) {
+export function goTypeForTS(node, ctx) {
   if (!node) return "any";
   switch (node.type) {
     case "TSStringKeyword":
@@ -55,8 +64,14 @@ export function goTypeForTS(node) {
     case "TSUnknownKeyword":
       return "any";
     case "TSArrayType": {
-      const elem = goTypeForTS(node.elementType);
-      return ["string", "bool", "float64"].includes(elem) ? `[]${elem}` : "[]any";
+      // The element carries the SAME ctx: `events: {…}[]` names its element
+      // struct after the field (`CounterInputEvents`), with no attempt at
+      // depluralization -- mechanical and predictable beats clever.
+      const elem = goTypeForTS(node.elementType, ctx);
+      if (["string", "bool", "float64"].includes(elem)) return `[]${elem}`;
+      // A named nested struct is a real Go type, so a slice of it is too.
+      if (ctx && isNamedStruct(elem, ctx)) return `[]${elem}`;
+      return "[]any";
     }
     case "TSUnionType": {
       // Union of string literals (`"default" | "outline"`) is just a string
@@ -67,7 +82,7 @@ export function goTypeForTS(node) {
       if (members.length === 0) return "any";
       const mapped = new Set(
         members.map((m) =>
-          m.type === "TSLiteralType" ? goTypeForLiteral(m.literal) : goTypeForTS(m),
+          m.type === "TSLiteralType" ? goTypeForLiteral(m.literal) : goTypeForTS(m, ctx),
         ),
       );
       return mapped.size === 1 ? [...mapped][0] : "any";
@@ -81,15 +96,87 @@ export function goTypeForTS(node) {
       if (name === "Marko.Body") return "runtime.Body";
       if (name === "Marko.HTMLAttributes" || name === "Marko.AttrTag") return "map[string]any";
       if (name === "Array" && node.typeParameters?.params?.length === 1) {
-        return goTypeForTS({ type: "TSArrayType", elementType: node.typeParameters.params[0] });
+        return goTypeForTS(
+          { type: "TSArrayType", elementType: node.typeParameters.params[0] },
+          ctx,
+        );
       }
       return "any";
     }
     case "TSTypeLiteral":
-      return "map[string]any";
+      // Without a naming context there is nothing to call the struct, so it
+      // stays an untyped map (the pre-FR3 behavior, still what a direct
+      // goTypeForTS(type) call gets).
+      return ctx ? declareNestedStruct(node, ctx) : "map[string]any";
     default:
       return "any";
   }
+}
+
+/**
+ * Naming convention for a struct generated from an inline object type:
+ * OUTER STRUCT NAME + PascalCase FIELD NAME, with no depluralization.
+ *
+ *   CounterInput.events: { label: string }[]  ->  CounterInputEvents
+ *   CounterInput.user:   { name: string }     ->  CounterInputUser
+ *   FooInput.bar.baz:    { … }                ->  FooInputBarBaz
+ *
+ * Deliberately mechanical: a reader can derive the name from the template
+ * without consulting the generated file, and "events" -> "Event" style
+ * depluralization would be a guess that breaks on the first irregular noun.
+ */
+export function nestedStructName(owner, jsField) {
+  return owner + goFieldName(jsField);
+}
+
+function isNamedStruct(goType, ctx) {
+  return ctx.nested.has(goType);
+}
+
+/**
+ * Registers a struct declaration for an inline object type and returns its
+ * name. Recurses with `owner` re-rooted at the struct just named, so a third
+ * level lands on FooInputBarBaz rather than colliding back at FooInputBaz.
+ */
+function declareNestedStruct(node, ctx) {
+  const structName = nestedStructName(ctx.owner, ctx.field);
+  // Reserve the name before recursing: a deeper level asks isNamedStruct
+  // about types declared at this level, and self-reference would otherwise
+  // recurse forever.
+  ctx.nested.set(structName, []);
+  const fields = [];
+  for (const member of node.members ?? []) {
+    if (!t.isTSPropertySignature(member)) {
+      // An inline object with a method/index signature has no faithful Go
+      // struct. Degrade the whole struct to a map rather than emit a type
+      // that silently drops members.
+      ctx.nested.delete(structName);
+      return "map[string]any";
+    }
+    const jsName = memberKeyName(member);
+    if (jsName === null) {
+      ctx.nested.delete(structName);
+      return "map[string]any";
+    }
+    fields.push({
+      jsName,
+      name: goFieldName(jsName),
+      goType: goTypeForTS(member.typeAnnotation?.typeAnnotation, {
+        owner: structName,
+        field: jsName,
+        nested: ctx.nested,
+      }),
+      optional: !!member.optional,
+    });
+  }
+  ctx.nested.set(structName, fields);
+  return structName;
+}
+
+function memberKeyName(member) {
+  if (t.isIdentifier(member.key)) return member.key.name;
+  if (t.isStringLiteral(member.key)) return member.key.value;
+  return null;
 }
 
 function goTypeForLiteral(lit) {
@@ -108,15 +195,26 @@ function typeRefName(node) {
 /**
  * Extracts `export interface Input { ... }` from .marko source.
  *
+ * Inline object types produce ADDITIONAL named structs (see
+ * nestedStructName); they're collected on the returned array as a
+ * non-enumerable-ish `nested` property rather than a second return value, so
+ * every existing `parseInputInterface(...)` call site (and every test that
+ * compares the result with toEqual) keeps working unchanged.
+ *
  * @param {string} source raw .marko file contents
  * @param {string} markoPath for error messages
- * @returns {{name: string, goType: string, jsName: string}[]} fields in
+ * @param {string} [owner] name of the Go struct these fields belong to,
+ *        e.g. "CounterInput" -- the root for nested struct names. Omitting it
+ *        disables nested struct generation (inline objects stay
+ *        `map[string]any`).
+ * @returns {{name: string, goType: string, jsName: string}[] &
+ *          {nested: {name: string, fields: object[]}[]}} fields in
  *          declaration order. Empty array when there is no interface or it
  *          declares no members (the struct is still emitted, empty).
  */
-export function parseInputInterface(source, markoPath = "<marko>") {
+export function parseInputInterface(source, markoPath = "<marko>", owner) {
   const head = sliceStatementSection(source);
-  if (!/interface\s+Input\b/.test(head)) return [];
+  if (!/interface\s+Input\b/.test(head)) return withNested([], new Map());
 
   let ast;
   try {
@@ -138,7 +236,8 @@ export function parseInputInterface(source, markoPath = "<marko>") {
       decl = candidate;
     }
   }
-  if (!decl) return [];
+  const nested = new Map();
+  if (!decl) return withNested([], nested);
 
   const fields = [];
   for (const member of decl.body.body) {
@@ -165,10 +264,27 @@ export function parseInputInterface(source, markoPath = "<marko>") {
     fields.push({
       jsName,
       name: goFieldName(jsName),
-      goType: goTypeForTS(member.typeAnnotation?.typeAnnotation),
+      goType: goTypeForTS(
+        member.typeAnnotation?.typeAnnotation,
+        owner ? { owner, field: jsName, nested } : undefined,
+      ),
       optional: !!member.optional,
     });
   }
+  return withNested(fields, nested);
+}
+
+/**
+ * Attaches the collected nested struct declarations to the fields array.
+ * Non-enumerable so `toEqual`/`JSON.stringify` on the result still see a
+ * plain array of fields -- the nested structs are a side channel for the
+ * one caller (transpile.mjs) that emits them.
+ */
+function withNested(fields, nested) {
+  Object.defineProperty(fields, "nested", {
+    value: [...nested].map(([name, f]) => ({ name, fields: f })),
+    enumerable: false,
+  });
   return fields;
 }
 
