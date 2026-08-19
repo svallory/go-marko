@@ -38,6 +38,72 @@ another. Add `*.marko.go` to `.gitignore`; the files are build output.
 One-shot mode is fail-fast: the first template that uses an unsupported
 construct aborts the run with a pointed error and a non-zero exit status.
 
+## Tag packages (npm)
+
+A `.marko` file can use a custom tag installed from npm, exactly like a
+regular Marko project:
+
+```sh
+bun add fancy-tags
+```
+
+```marko
+<fancy-badge label="new"/>
+```
+
+Two things make this work, both standard Marko conventions -- marko-go
+doesn't add any of its own:
+
+1. Your project's `package.json` must list the package as a **dependency**
+   (`bun add` does this for you). That's how Marko's own taglib discovery
+   finds the package's tags in the first place -- it isn't enough for the
+   package to merely exist in `node_modules`.
+2. The package's root `marko.json` must point at a directory of `.marko`
+   files, e.g. `{ "exports": "./dist/tags" }`. Any package that ships tags
+   for Marko already does this; it's how `<fancy-badge/>` resolves to
+   `fancy-tags/dist/tags/fancy-badge.marko`.
+
+`marko-go generate` compiles every such tag your project actually uses (and,
+recursively, any tag *that* tag imports from the same package) the same way
+it compiles your own templates. The generated Go doesn't live next to your
+`.marko` files, though -- vendored tags aren't yours to edit, so they get
+their own tree:
+
+```
+<go-mod-root>/marko_modules/<sanitized-pkg>/<template>.marko.go
+```
+
+`<sanitized-pkg>` is the npm package name, lowercased, with `@scope/name`
+becoming `scope_name` and anything outside `[a-z0-9_]` collapsed to `_`
+(never a leading `_` or digit -- Go tooling silently skips directories
+whose name starts with `_` or `.`, and this doubles as the Go package name).
+The package's own internal path (`dist/tags/...`) is dropped; only on a
+name collision within one package does the subpath get folded back in to
+disambiguate.
+
+Calling a vendored tag from your own templates works exactly like calling
+another of your own tags in a different directory -- an aliased import, a
+`PascalName` function, and an `Input` struct generated from the package
+template's own `export interface Input`:
+
+```go
+import "myapp/marko_modules/fancy_tags"
+// ...
+fancy_tags.FancyBadge(w, fancy_tags.FancyBadgeInput{Label: "new"})
+```
+
+**Add `marko_modules/` to your `.gitignore`** -- the whole directory, not a
+`*.marko.go` glob inside it. Unlike your own templates (where you likely
+want the generated Go reviewed and possibly even committed), `marko_modules`
+is pure build output derived from someone else's package: whatever tags you
+use, and how many files that expands into, changes with your dependencies
+and is regenerated from scratch every run.
+
+**After `bun add`-ing a new tag package, re-run `generate`** (or restart
+`--watch`) -- watch mode only watches your own template tree, not
+`node_modules`, so a freshly installed package's tags won't appear until the
+next generate.
+
 ## Watch
 
 ```sh
