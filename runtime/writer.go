@@ -77,6 +77,11 @@ func (w *Writer) Globals() any {
 // appended. Trailers are flushed here as a safety net for renders that never
 // call FlushResume; calling FlushResume first is the normal path and makes
 // this a plain read.
+//
+// Because of that safety net, String is NOT a pure read MID-RENDER: calling it
+// before the outermost FlushResume commits the trailers at that point, so the
+// closing `</body></html>` lands ahead of markup still to come and ahead of
+// the resume payload. Call it once, after the render completes.
 func (w *Writer) String() string {
 	w.flushTrailers()
 	return w.sb.String()

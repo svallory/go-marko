@@ -638,3 +638,196 @@ func TestArrowHeadChosenAfterSerialization(t *testing.T) {
 		t.Errorf("got %s, want %s", got, want)
 	}
 }
+
+// --- Phase C additions: scope ids, render depth, client bundle, Absent -----
+
+func TestAllocScopeIDIsOneBasedAndSequential(t *testing.T) {
+	// Scope id 0 is $global, so template scopes start at 1. An off-by-one here
+	// shifts every marker, every _(id) reference and every payload delta.
+	w := New()
+	var got []int
+	for i := 0; i < 4; i++ {
+		got = append(got, w.AllocScopeID())
+	}
+	want := []int{1, 2, 3, 4}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("AllocScopeID() sequence = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestPeekScopeIDDoesNotConsume(t *testing.T) {
+	w := New()
+	w.AllocScopeID() // 1
+	if peek := w.PeekScopeID(); peek != 2 {
+		t.Fatalf("PeekScopeID() = %d, want 2", peek)
+	}
+	if peek := w.PeekScopeID(); peek != 2 {
+		t.Fatalf("PeekScopeID() must not consume; second call = %d, want 2", peek)
+	}
+	if next := w.AllocScopeID(); next != 2 {
+		t.Fatalf("AllocScopeID() after peek = %d, want 2", next)
+	}
+}
+
+func TestTouchScopeAloneSerializesNothing(t *testing.T) {
+	// _existing_scope registers a scope without state. A scope with no own
+	// properties is skipped by the serializer, so it must not produce a
+	// payload on its own -- but it does mark the render as needing the runtime.
+	w := New()
+	w.BeginTemplate()
+	w.HTML("<p></p>")
+	w.TouchScope(1)
+	if err := w.FlushResume(); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.String(); got != "<p></p>" {
+		t.Fatalf("TouchScope alone produced %q, want no script", got)
+	}
+}
+
+func TestTouchScopeMergesWithLaterState(t *testing.T) {
+	w := New()
+	w.BeginTemplate()
+	w.TouchScope(1)
+	w.AddScope(1, ScopeStateOf("a", 1))
+	if err := w.FlushResume(); err != nil {
+		t.Fatal(err)
+	}
+	if want := "_=>[1,{a:1}]"; !strings.Contains(w.String(), want) {
+		t.Fatalf("payload %q does not contain %q", w.String(), want)
+	}
+}
+
+func TestOnlyTheOutermostRenderFlushes(t *testing.T) {
+	// The depth counter is what makes "which template is the page?" a runtime
+	// question. A nested render that flushed would emit the payload
+	// mid-document, before its siblings had contributed anything.
+	w := New()
+	w.BeginTemplate() // page
+	w.HTML("<body>")
+	w.Trailer("</body>")
+
+	w.BeginTemplate() // a tag it calls
+	w.HTML("<i></i>")
+	w.AddScope(1, ScopeStateOf("a", 1))
+	if err := w.FlushResume(); err != nil { // must be a no-op
+		t.Fatal(err)
+	}
+	// Inspect the buffer directly: String() flushes trailers as a safety net,
+	// so calling it mid-render would itself move `</body>` and mask the very
+	// ordering this test is about.
+	if mid := w.sb.String(); strings.Contains(mid, "<script>") {
+		t.Fatalf("nested FlushResume emitted a payload: %q", mid)
+	}
+
+	w.HTML("<b></b>")
+	w.AddScope(2, ScopeStateOf("b", 2))
+	if err := w.FlushResume(); err != nil {
+		t.Fatal(err)
+	}
+	got := w.String()
+	// One payload, carrying BOTH scopes, before the trailer.
+	if strings.Count(got, "<script>") != 1 {
+		t.Fatalf("want exactly one payload script, got %q", got)
+	}
+	if !strings.Contains(got, "_=>[1,{a:1},{b:2}]") {
+		t.Fatalf("payload missing the nested render's scope: %q", got)
+	}
+	if !strings.HasSuffix(got, "</body>") {
+		t.Fatalf("payload must precede the trailer: %q", got)
+	}
+}
+
+func TestClientBundleScriptFollowsThePayload(t *testing.T) {
+	// init() needs M._.r to already exist, so the module script comes AFTER
+	// the payload and BEFORE the trailers.
+	w := New()
+	w.BeginTemplate()
+	w.HTML("<body>")
+	w.AddScope(1, ScopeStateOf("a", 1))
+	w.ClientBundle("/.marko-go/client/page.js")
+	w.Trailer("</body>")
+	if err := w.FlushResume(); err != nil {
+		t.Fatal(err)
+	}
+	got := w.String()
+	payload := strings.Index(got, "M._.r=")
+	bundle := strings.Index(got, `<script type="module"`)
+	trailer := strings.Index(got, "</body>")
+	if payload < 0 || bundle < 0 || trailer < 0 {
+		t.Fatalf("missing a piece in %q", got)
+	}
+	if !(payload < bundle && bundle < trailer) {
+		t.Fatalf("wrong order (payload=%d bundle=%d trailer=%d): %q", payload, bundle, trailer, got)
+	}
+}
+
+func TestNoClientBundleNoScriptTag(t *testing.T) {
+	// A page with no reactivity must cost a browser nothing.
+	w := New()
+	w.BeginTemplate()
+	w.HTML("<p>static</p>")
+	if err := w.FlushResume(); err != nil {
+		t.Fatal(err)
+	}
+	if got := w.String(); strings.Contains(got, "<script") {
+		t.Fatalf("unexpected script tag: %q", got)
+	}
+}
+
+func TestAbsentMapsZeroValuesToUndefined(t *testing.T) {
+	// An optional input field left unset must reach the wire as `undefined`:
+	// dropped from an object, and the positional `$` hole in an array.
+	for _, zero := range []any{"", 0, false, nil} {
+		if Absent(zero) != any(Undefined) {
+			t.Errorf("Absent(%#v) = %#v, want Undefined", zero, Absent(zero))
+		}
+	}
+	for _, set := range []any{"x", 1, true} {
+		if Absent(set) == any(Undefined) {
+			t.Errorf("Absent(%#v) must pass a set value through", set)
+		}
+	}
+}
+
+func TestAbsentValueIsVoidInAttrsAndDroppedInPayload(t *testing.T) {
+	if got := Attr("target", Absent("")); got != "" {
+		t.Fatalf("Attr with an absent value = %q, want \"\"", got)
+	}
+	if got := Attr("target", Absent("_blank")); got != ` target=_blank` {
+		t.Fatalf("Attr with a set value = %q", got)
+	}
+
+	w := New()
+	w.BeginTemplate()
+	// Object position: the property vanishes. Array position: `$`, which also
+	// forces the `(_,$)=>` arrow head.
+	w.AddScope(1, ScopeStateOf("h", Absent(""), "m", []any{"a", Absent("")}))
+	if err := w.FlushResume(); err != nil {
+		t.Fatal(err)
+	}
+	if want := `(_,$)=>[1,{m:["a",$]}]`; !strings.Contains(w.String(), want) {
+		t.Fatalf("payload %q does not contain %q", w.String(), want)
+	}
+}
+
+func TestEndTemplatePanicsWithTheTemplateName(t *testing.T) {
+	// Render funcs cannot return an error, and swallowing one would ship a
+	// page whose HTML looks right and whose interactivity is silently dead.
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("EndTemplate did not panic on a serialization failure")
+		}
+		msg, _ := r.(string)
+		if !strings.Contains(msg, "widget.marko") {
+			t.Fatalf("panic message %q does not name the template", msg)
+		}
+	}()
+	w := New()
+	w.BeginTemplate()
+	w.AddScope(1, ScopeStateOf("bad", make(chan int)))
+	w.EndTemplate("widget.marko")
+}
