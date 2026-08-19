@@ -85,11 +85,21 @@ export function buildRegistry(root, { modulePath, moduleRoot }) {
 /**
  * Generate Go for every template under `root`.
  *
+ * One-shot mode is fail-fast: the first bad template aborts the run and the
+ * CLI exits non-zero. Watch mode passes `bestEffort` instead, which keeps
+ * going past a broken file (leaving its previously generated .go on disk)
+ * and returns the failures for the caller to print -- a typo mid-edit must
+ * never take the watcher down.
+ *
  * @param {string} root directory to walk
- * @param {{write?: boolean}} [opts] when write is false, nothing touches disk
- * @returns {{markoPath: string, outPath: string, code: string}[]}
+ * @param {{write?: boolean, bestEffort?: boolean}} [opts] when write is
+ *   false, nothing touches disk; when bestEffort is true, per-file errors are
+ *   collected instead of thrown
+ * @returns {Promise<{markoPath: string, outPath: string, code: string}[]> |
+ *   Promise<{results: {markoPath: string, outPath: string, code: string}[],
+ *            errors: {markoPath: string, error: Error}[]}>}
  */
-export async function generateProject(root, { write = true } = {}) {
+export async function generateProject(root, { write = true, bestEffort = false } = {}) {
   const abs = path.resolve(root);
   if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
     throw new UnsupportedError(`not a directory: ${abs}`);
@@ -97,8 +107,20 @@ export async function generateProject(root, { write = true } = {}) {
   const mod = findGoModule(abs);
   const registry = buildRegistry(abs, mod);
   const results = [];
+  const errors = [];
 
   for (const entry of registry.values()) {
+    try {
+      results.push(await generateOne(entry, registry));
+    } catch (err) {
+      if (!bestEffort) throw err;
+      errors.push({ markoPath: entry.markoPath, error: err });
+    }
+  }
+
+  return bestEffort ? { results, errors } : results;
+
+  async function generateOne(entry, registry) {
     const js = await compileMarko(entry.markoPath);
 
     // Aliases are per generated FILE: every cross-directory dependency is
@@ -138,8 +160,6 @@ export async function generateProject(root, { write = true } = {}) {
     });
 
     if (write) fs.writeFileSync(entry.outPath, code);
-    results.push({ markoPath: entry.markoPath, outPath: entry.outPath, code });
+    return { markoPath: entry.markoPath, outPath: entry.outPath, code };
   }
-
-  return results;
 }

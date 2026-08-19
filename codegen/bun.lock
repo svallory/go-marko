@@ -10,6 +10,7 @@
         "@babel/types": "^7.29.8",
         "@marko/compiler": "^5.42.1",
         "@marko/runtime-tags": "^6.3.42",
+        "chokidar": "^5.0.0",
       },
     },
   },
@@ -48,6 +49,8 @@
 
     "buffer-from": ["buffer-from@1.1.2", "", {}, "sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ=="],
 
+    "chokidar": ["chokidar@5.0.0", "", { "dependencies": { "readdirp": "^5.0.0" } }, "sha512-TQMmc3w+5AxjpL8iIiwebF73dRDF4fBIieAqGn9RGCWaEVwQ6Fb2cGe31Yns0RRIzii5goJ1Y7xbMwo1TxMplw=="],
+
     "complain": ["complain@1.6.1", "", { "dependencies": { "error-stack-parser": "^2.0.1" } }, "sha512-WsiVAbAPcPSwyC5k8g/PLceaW0MXJUw61KqBd9uiyDOSuDIC6Ho/EbyhdFjeV6wq44R2g/b8IFpvV/1ZyXiqUQ=="],
 
     "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
@@ -83,6 +86,8 @@
     "raptor-regexp": ["raptor-regexp@1.0.1", "", {}, "sha512-DqC7ViHJUs3jLIxJI1/HVvCu3yPJaP8CM7PGsHvjimg7yJ3lLOdCBxlPE0G2Q8OJgUA8Pe7nvhm6lcQ3hZepow=="],
 
     "raptor-util": ["raptor-util@3.2.0", "", {}, "sha512-uEDMMkBCJvjTqYMBnJNxn+neiS6a0rhybQNA9RaexGor1uvKjwyHA5VcbZMZEuqXhKUWbL+WNS7PhuZVZNB7pw=="],
+
+    "readdirp": ["readdirp@5.1.1", "", {}, "sha512-Kko+Y5XQ6fM+Ce3dq3m9YGxnacYZYl9cA1wZjaF3Vbry2L3i1qVg8+CAgNPsXRArPMUMCaOR7oa9Nqntc43JKA=="],
 
     "relative-import-path": ["relative-import-path@1.0.1", "", {}, "sha512-mLABwLdOB694B3BW3bNlLOJsWCDhFRBn4BW+gkhILZXJFaymkQWDZom+3qOGYFpbN9K8eeQx8lsy2N+SX/qncQ=="],
 

@@ -1,9 +1,25 @@
 {
-  "name": "@svallory/marko-go-codegen",
-  "version": "1.0.0",
+  "name": "marko-go",
+  "version": "0.1.0",
+  "description": "Compile Marko templates to type-safe Go render functions, with a templ-style --watch/--proxy dev loop.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/svallory/go-marko.git",
+    "directory": "codegen"
+  },
+  "homepage": "https://github.com/svallory/go-marko#readme",
+  "bugs": {
+    "url": "https://github.com/svallory/go-marko/issues"
+  },
+  "keywords": ["marko", "go", "golang", "templates", "codegen", "templ", "ssr"],
   "bin": {
     "marko-go": "./src/cli.mjs"
+  },
+  "files": ["src", "README.md"],
+  "engines": {
+    "node": ">=20.19.0"
   },
   "scripts": {
     "test": "bun test"
@@ -13,6 +29,7 @@
     "@babel/traverse": "^7.29.8",
     "@babel/types": "^7.29.8",
     "@marko/compiler": "^5.42.1",
-    "@marko/runtime-tags": "^6.3.42"
+    "@marko/runtime-tags": "^6.3.42",
+    "chokidar": "^5.0.0"
   }
 }
