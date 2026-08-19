@@ -165,6 +165,40 @@ it cannot connect.
 
 **Port 7331 already in use.** Pass `--proxy-port=<other>`.
 
+## Toolchain pinning
+
+`@marko/compiler` and `@marko/runtime-tags` are pinned to **exact** versions
+in `package.json` (no `^`/`~` range), currently `5.42.1` / `6.3.42`.
+
+**Why exact pins.** `codegen/src/transpile.mjs` does not treat the compiled
+JS as an arbitrary program -- it asserts exact intrinsic names, import
+shapes, and call arities (e.g. `_for_of`'s positional argument list,
+`_attrs`'s arity) that are internal implementation details of this specific
+compiler/runtime-tags version pair, not a stable public contract. A minor or
+patch bump is free to change any of that. Separately, the resume wire format
+explored in `notes/fr12-resume-findings.md` -- accessor key minification,
+registry-id hashes, the bootstrap script text -- is explicitly a
+compiler-version artifact (see that doc's "Risks" #1): a `@marko/runtime-tags`
+bump can silently change bytes on the wire with no signal beyond "the compiler
+moved". Exact pins are the same mitigation for both problems: nothing changes
+under this project's feet without a deliberate, reviewed bump.
+
+**Bump procedure.**
+
+1. Bump the pin in `package.json` (still exact, no range) and run
+   `bun install` to settle `bun.lock`.
+2. Run `bun test codegen/test/intrinsic-arity.test.mjs`. It compiles a small
+   set of probe templates and asserts the exact intrinsic import names and
+   call shapes the transpiler depends on -- if the new version changed any of
+   them, this fails first and loudest, naming the intrinsic.
+3. Run the full suite (`bun test`).
+4. Run the oracle/golden-file conformance checks (byte-diff generated Go
+   output against the JS renderer, and the checked-in golden `.marko.go`
+   fixtures) and regenerate goldens deliberately if the new version changed
+   legitimate output (`UPDATE_GOLDENS=1 bun test`, where applicable).
+5. Commit the pin bump together with any resulting golden/test changes as one
+   change -- never bump the pin silently alongside unrelated work.
+
 ## License
 
 MIT
