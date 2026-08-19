@@ -3,8 +3,8 @@ package main
 import (
 	"fmt"
 
-	"github.com/svallory/go-marko/runtime"
 	hello "github.com/svallory/go-marko/examples/hello"
+	"github.com/svallory/go-marko/runtime"
 )
 
 func main() {

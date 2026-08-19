@@ -13,8 +13,8 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/svallory/go-marko/runtime"
 	counter "github.com/svallory/go-marko/examples/counter"
+	"github.com/svallory/go-marko/runtime"
 )
 
 var (
