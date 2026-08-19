@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: codegen/package.json
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Install codegen dependencies
+        run: bun install --frozen-lockfile
+        working-directory: codegen
+
+      - name: bun test
+        run: bun test
+        working-directory: codegen
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./...
+
+      - name: Regenerate examples
+        run: |
+          bun src/cli.mjs generate ../examples/hello
+          bun src/cli.mjs generate ../examples/counter
+        working-directory: codegen
+
+      - name: Fail if generated examples drifted
+        run: git diff --exit-code examples/
