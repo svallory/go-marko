@@ -65,12 +65,39 @@ export const DEFAULT_CLIENT_DIR = path.join(".marko-go", "client");
  */
 export async function compileMarkoDom(markoPath) {
   const src = fs.readFileSync(markoPath, "utf8");
-  const result = await compiler.compile(src, markoPath, {
+  const result = await compiler.compile(src, canonicalPath(markoPath), {
     translator: TRANSLATOR,
     output: "dom",
     optimize: true,
   });
   return result.code;
+}
+
+/**
+ * The one path spelling every compile must use.
+ *
+ * Registry ids hash the absolute path, and a path can be spelled more than one
+ * way: on macOS `/var` is a symlink to `/private/var`, so a temp directory has
+ * two equally valid absolute names. That matters because bundlers resolve
+ * imports through `realpath` -- Bun hands this module's plugin
+ * `/private/var/.../ui-button.marko` while `generateProject`, walking the
+ * directory it was given, holds `/var/.../ui-button.marko`. Same file, two
+ * paths, two id sets: the payload references ids nothing registered and the
+ * page renders perfectly while being completely inert.
+ *
+ * This was not hypothetical -- it is exactly what happened the first time this
+ * pipeline ran against a temp-directory fixture, and it is why the id
+ * cross-check exists. Normalizing here means both halves hash the same string
+ * no matter which spelling they were handed.
+ */
+export function canonicalPath(p) {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    // A path that cannot be resolved (deleted mid-build) is left as-is; the
+    // compile is about to fail for a better reason.
+    return p;
+  }
 }
 
 /**
@@ -210,9 +237,42 @@ export async function bundlePage(markoPath, htmlCode) {
         `client bundle failed for ${markoPath}: ${result.logs.map(String).join("; ")}`,
       );
     }
-    return { code: await result.outputs[0].text(), ids: extractRegistryIds(domCode) };
+    const code = await result.outputs[0].text();
+    // The check that actually matters: the ids in the SHIPPED BUNDLE, not just
+    // in the two pre-bundle compiles. The bundler resolves imports its own way
+    // (through realpath, and through its own plugin for every transitive
+    // `.marko`), so it is the one component that can reintroduce a path
+    // mismatch after everything upstream agreed -- which is exactly what it
+    // did the first time this ran against a temp-directory fixture. See
+    // canonicalPath.
+    assertBundleRegistersServerIds(markoPath, htmlCode, code);
+    return { code, ids: extractRegistryIds(domCode) };
   } finally {
     fs.rmSync(entryPath, { force: true });
+  }
+}
+
+/**
+ * Fail if a registry id the SERVER will write is absent from the bundled
+ * output.
+ *
+ * Only `_script` ids are checked. Those are the ones the payload's effects
+ * string names and `init()` looks up, so a missing one is precisely the
+ * "renders perfectly, completely inert" failure. `_content`/`_template` ids
+ * can legitimately be optimized away by the bundler when nothing references
+ * them at runtime.
+ */
+function assertBundleRegistersServerIds(markoPath, htmlCode, bundleCode) {
+  const scriptIds = new Set(
+    [...htmlCode.matchAll(/\b_script\(\s*[^,)"]+,\s*"([^"]+)"\s*\)/g)].map((m) => m[1]),
+  );
+  const missing = [...scriptIds].filter((id) => !bundleCode.includes(id));
+  if (missing.length > 0) {
+    throw new Error(
+      `client bundle for ${markoPath} does not register ${missing.join(", ")}, ` +
+        "which the server's resume payload references. The page would render correctly and be completely inert. " +
+        "Registry ids hash the template's ABSOLUTE path, so this means the bundler compiled a different path spelling than the server half.",
+    );
   }
 }
 

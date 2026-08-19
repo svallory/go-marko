@@ -1,6 +1,7 @@
 import compiler from "@marko/compiler";
 import fs from "node:fs";
 import { createRequire } from "node:module";
+import { canonicalPath } from "./clientbundle.mjs";
 
 /**
  * Resolve the translator to an absolute path ONCE, relative to this file.
@@ -28,7 +29,11 @@ const TRANSLATOR = createRequire(import.meta.url).resolve(
  */
 export async function compileMarko(markoPath) {
   const src = fs.readFileSync(markoPath, "utf8");
-  const result = await compiler.compile(src, markoPath, {
+  // canonicalPath, not markoPath: registry ids hash the absolute path, and the
+  // client bundler resolves imports through realpath. The two halves have to
+  // hash the SAME spelling of the same file or the payload references ids the
+  // bundle never registered. See clientbundle.mjs's canonicalPath.
+  const result = await compiler.compile(src, canonicalPath(markoPath), {
     translator: TRANSLATOR,
     output: "html",
     optimize: true,
