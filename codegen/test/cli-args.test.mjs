@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { main, parseArgs, USAGE } from "../src/cli.mjs";
+import { fileURLToPath } from "node:url";
+import { buildBunReexecArgv, main, parseArgs, USAGE } from "../src/cli.mjs";
+
+const CLI_PATH = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
 
 describe("parseArgs", () => {
   test("one-shot generate", () => {
@@ -203,6 +207,70 @@ describe("batch mode error reporting", () => {
       expect(err).toMatch(/no go\.mod found/);
     } finally {
       fs.rmSync(orphan, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("buildBunReexecArgv", () => {
+  test("drops the runtime binary, keeps the script path and every user arg", () => {
+    const argv = buildBunReexecArgv([
+      "/usr/local/bin/node",
+      "/usr/local/lib/marko-go/src/cli.mjs",
+      "generate",
+      "--watch",
+      "./ui",
+    ]);
+    expect(argv).toEqual([
+      "/usr/local/lib/marko-go/src/cli.mjs",
+      "generate",
+      "--watch",
+      "./ui",
+    ]);
+  });
+
+  test("no user args still yields just the script path", () => {
+    expect(buildBunReexecArgv(["/bin/node", "/path/cli.mjs"])).toEqual(["/path/cli.mjs"]);
+  });
+
+  test("passes through flags containing '=' and spaces untouched", () => {
+    const argv = buildBunReexecArgv([
+      "/bin/node",
+      "/path/cli.mjs",
+      "generate",
+      "--cmd=go run -buildvcs=false .",
+      "ui",
+    ]);
+    expect(argv).toEqual(["/path/cli.mjs", "generate", "--cmd=go run -buildvcs=false .", "ui"]);
+  });
+});
+
+describe("cli.mjs re-exec under bun (smoke)", () => {
+  // This spawns the real binary under node's own runtime, so it goes through
+  // the ACTUAL argv[1]?.endsWith("cli.mjs") entrypoint guard rather than a
+  // mock -- worth the process cost to catch a regression in the guard itself
+  // (e.g. an accidental `return` before the re-exec, or a swallowed exit code).
+  test("running cli.mjs under node re-execs under bun and forwards --help", () => {
+    const result = spawnSync(process.execPath, [CLI_PATH, "--help"], {
+      encoding: "utf8",
+      timeout: 15000,
+    });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain("marko-go generate [flags] <dir>");
+  });
+
+  test("running cli.mjs under node forwards a real generate's exit code and output", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "marko-go-reexec-"));
+    try {
+      fs.writeFileSync(path.join(root, "go.mod"), "module myapp\n\ngo 1.24\n");
+      fs.writeFileSync(path.join(root, "fine.marko"), "<p>ok</p>\n");
+      const result = spawnSync(process.execPath, [CLI_PATH, "generate", root], {
+        encoding: "utf8",
+        timeout: 15000,
+      });
+      expect(result.status).toBe(0);
+      expect(result.stdout).toContain("fine.marko.go");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
     }
   });
 });

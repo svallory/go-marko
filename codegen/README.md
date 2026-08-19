@@ -24,6 +24,19 @@ bunx marko-go --help    # or run it without installing
 npm/pnpm/yarn work too (`npm i -g marko-go`, `npx marko-go`). Requires Node
 >= 20.19.
 
+**Requires `bun` on PATH.** Client bundling (see [Client bundles](#client-bundles)
+below) uses `Bun.build`, which only exists inside the bun runtime. Even if
+you installed marko-go with npm/pnpm/yarn and it runs under `node`, `cli.mjs`
+re-execs itself under `bun` on every invocation, transparently, before doing
+anything else. If `bun` isn't installed, the run fails immediately with:
+
+```
+marko-go requires bun for client bundling -- install from https://bun.sh
+```
+
+Install bun from [bun.sh](https://bun.sh) and it just works, regardless of
+which package manager you used to install marko-go itself.
+
 ## Generate
 
 ```sh
@@ -142,7 +155,52 @@ Ctrl-C kills the child process group, closes the proxy, and exits cleanly.
 | `--cmd=<command>` | shell command to restart after each regenerate |
 | `--proxy=<url>` | app URL to reverse-proxy with live reload |
 | `--proxy-port=<port>` | proxy listen port (default `7331`) |
+| `--client-dir=<dir>` | where page client bundles are written (default `<dir>/.marko-go/client`) |
+| `--client-url=<base>` | URL base the generated `<script src>` uses (default `/.marko-go/client/`) |
+| `--no-client` | skip the browser half entirely: no bundles, no script tag |
 | `-h`, `--help` | usage |
+
+## Client bundles
+
+A **page** — a template no other template imports — whose compiled client
+code is non-empty gets a browser bundle, and its generated Go emits
+`<script type="module" src="...">` for it after the resume payload. A page
+with no client-side reactivity ships no bundle and no script tag at all.
+
+**The convention, stated once, unambiguously:** the bundle for a page is
+written to `<client-dir>/<page>.js`, and the script tag points at
+`<client-url><page>.js`. By default:
+
+- `<client-dir>` = `<generate-root>/.marko-go/client` — where "generate-root"
+  is the `<dir>` argument you pass to `marko-go generate <dir>` (e.g. `ui` in
+  `marko-go generate ./ui`), **not** your Go module root and not your
+  repo root. If your generate root and module root differ, this path is
+  still relative to the generate root.
+- `<client-url>` = `/.marko-go/client/`
+
+Both defaults line up on purpose, so mounting is one line — no
+`http.StripPrefix` knowledge required:
+
+```go
+mux := http.NewServeMux()
+marko.MountClientAssets(mux, "ui/.marko-go/client")
+```
+
+If you passed a custom `--client-url` to `marko-go generate`, mount with the
+matching prefix instead:
+
+```go
+marko.MountClientAssetsAt(mux, "/assets/js/", "ui/.marko-go/client")
+```
+
+`marko.ClientAssets(dir)` is also exported as the low-level `http.Handler`
+underneath both of these — an `http.FileServer` restricted to `.js` files
+with the two headers a bundle needs (`Content-Type: text/javascript`,
+`Cache-Control: no-store`). Use it directly only if you need to compose it
+into something `Mount*` doesn't cover; it expects the URL prefix already
+stripped (via `http.StripPrefix` or one of the `Mount*` helpers above), and
+will 404 on anything that isn't a `.js` file, including directory listings
+and path traversal attempts.
 
 ## Troubleshooting
 

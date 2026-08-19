@@ -4,6 +4,72 @@ import { generateProject } from "./project.mjs";
 import { DEFAULT_CLIENT_URL } from "./clientbundle.mjs";
 import { UnsupportedError } from "./errors.mjs";
 
+/**
+ * Build the argv for re-executing this same CLI invocation under `bun`.
+ *
+ * A global install (`npm i -g marko-go`, `bun link`) can leave the `marko-go`
+ * shim on PATH pointing at a `node` shebang, or a user's shell/package
+ * manager may otherwise launch `cli.mjs` under plain node. Client bundling
+ * needs `Bun.build`, which only exists inside the bun runtime -- there is no
+ * node polyfill for it -- so a node-launched run must hand the SAME argv to
+ * a `bun` child process rather than fail outright.
+ *
+ * Kept pure and exported so the argv construction is unit-testable without
+ * actually spawning a process.
+ *
+ * @param {string[]} argv  process.argv (script path included, as node/bun set it)
+ * @returns {string[]} argv to pass to `spawn("bun", ...)`
+ */
+export function buildBunReexecArgv(argv) {
+  // argv[0] is the node/bun binary, argv[1] is this script's path -- bun run
+  // <script> [...userArgs] reconstructs the same invocation faithfully.
+  return [argv[1], ...argv.slice(2)];
+}
+
+/**
+ * If not already running under bun, re-exec this exact invocation under
+ * `bun` and resolve with its exit code -- otherwise resolve with `null` so
+ * the caller proceeds normally.
+ *
+ * Always re-execs (never tries to guess whether this particular run needs
+ * client bundling): predicting that from flags alone would have to special-
+ * case --no-client, --watch's per-change regenerate, and any future flag
+ * that touches bundling, and would still be wrong the moment a "no bundling
+ * needed" run's templates gain client code. Re-exec is cheap and uniform.
+ *
+ * @returns {Promise<number | null>}
+ */
+async function reexecUnderBunIfNeeded() {
+  if (typeof Bun !== "undefined") return null;
+
+  const { spawn } = await import("node:child_process");
+  const bunArgv = buildBunReexecArgv(process.argv);
+
+  return new Promise((resolve, reject) => {
+    const child = spawn("bun", bunArgv, { stdio: "inherit" });
+    child.on("error", (err) => {
+      if (err.code === "ENOENT") {
+        console.error(
+          "marko-go: requires bun for client bundling -- install from https://bun.sh",
+        );
+        resolve(1);
+        return;
+      }
+      reject(err);
+    });
+    child.on("exit", (code, signal) => {
+      // A child killed by a signal (e.g. Ctrl-C forwarded via inherited
+      // stdio) has no exit code; mirror the shell convention of 128+signal
+      // rather than resolving null into a Node exit code.
+      if (code === null) {
+        resolve(signal ? 128 : 1);
+        return;
+      }
+      resolve(code);
+    });
+  });
+}
+
 export const USAGE = `marko-go -- compile Marko templates to Go
 
 usage:
@@ -43,13 +109,21 @@ examples:
 client bundles:
   A PAGE -- a template no other template imports -- whose compiled client code
   is non-empty also gets a browser bundle, and its generated Go emits a
-  <script type="module" src=...> for it. Serve the client dir from the URL
-  base with marko.ClientAssets:
+  <script type="module" src=...> for it. The bundle is written to
+  <client-dir>/<page>.js (default <dir>/.marko-go/client/<page>.js) and the
+  script tag points at <client-url><page>.js (default /.marko-go/client/,
+  relative to <dir> -- see --client-dir/--client-url above), so mounting is
+  one line:
 
-    mux.Handle("GET /.marko-go/client/",
-      http.StripPrefix("/.marko-go/client/", marko.ClientAssets("ui/.marko-go/client")))
+    marko.MountClientAssets(mux, "ui/.marko-go/client")
 
-  A page with no reactivity ships no bundle and no script tag.
+  Passed a custom --client-url, use MountClientAssetsAt(mux, urlPrefix, dir)
+  instead. A page with no reactivity ships no bundle and no script tag.
+
+requirements:
+  Client bundling uses Bun.build, so marko-go always re-execs itself under
+  bun. If bun is not on PATH, generate fails with a clear error; install it
+  from https://bun.sh. This applies even if you installed marko-go with npm.
 `;
 
 /**
@@ -246,5 +320,12 @@ export async function main(argv) {
 
 // Only run when invoked as the binary, so tests can import parseArgs/main.
 if (import.meta.main ?? process.argv[1]?.endsWith("cli.mjs")) {
+  // Client bundling needs Bun.build, which does not exist under plain node --
+  // re-exec under bun BEFORE anything else runs, so a node-launched global
+  // install (npm/bun link shims can point at either) still works.
+  const reexecCode = await reexecUnderBunIfNeeded();
+  if (reexecCode !== null) {
+    process.exit(reexecCode);
+  }
   process.exit(await main(process.argv.slice(2)));
 }
