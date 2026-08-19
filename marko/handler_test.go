@@ -40,7 +40,8 @@ func TestHandler(t *testing.T) {
 func TestHandlerFunc(t *testing.T) {
 	type props struct{ Name string }
 
-	build := func(r *http.Request) props {
+	build := func(w http.ResponseWriter, r *http.Request) props {
+		http.SetCookie(w, &http.Cookie{Name: "session", Value: "s1"})
 		return props{Name: r.URL.Query().Get("name")}
 	}
 	render := func(w *runtime.Writer, p props) {
@@ -66,5 +67,10 @@ func TestHandlerFunc(t *testing.T) {
 	want := "<h1>Hello, World</h1>"
 	if got := rec.Body.String(); got != want {
 		t.Fatalf("body = %q, want %q", got, want)
+	}
+
+	cookies := resp.Cookies()
+	if len(cookies) != 1 || cookies[0].Name != "session" || cookies[0].Value != "s1" {
+		t.Fatalf("cookies = %v, want one session=s1 cookie set by build", cookies)
 	}
 }
