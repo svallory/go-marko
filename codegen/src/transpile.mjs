@@ -1,17 +1,10 @@
 import { parse } from "@babel/parser";
 import * as t from "@babel/types";
+import { UnsupportedError } from "./errors.mjs";
+import { camelCase, capitalize, goStringLiteral } from "./names.mjs";
+import { goFieldName, renderInputStruct } from "./inputstruct.mjs";
 
-/**
- * Thrown for any construct outside the supported subset. Always carries a
- * source location so failures point at real code, not this transpiler.
- */
-export class UnsupportedError extends Error {
-  constructor(message, node) {
-    const loc = node?.loc?.start;
-    super(loc ? `${message} (at ${loc.line}:${loc.column})` : message);
-    this.name = "UnsupportedError";
-  }
-}
+export { UnsupportedError };
 
 // Intrinsics whose entire purpose is resumability/scope-tracking bookkeeping.
 // Since marko-go never hydrates -- every page mounts fresh -- these are
@@ -21,11 +14,15 @@ const RESUME_ONLY = new Set([
   "_scope_reason",
   "_serialize_guard",
   "_serialize_if",
+  "_set_serialize_reason",
   "_scope_id",
   "_scope",
   "_scope_with_id",
   "_el_resume",
   "_sep",
+  // `_script` is where Marko 6 puts a tag's client-side effect code. go-marko
+  // is server-only, so it drops it; shipping page JS is FR6's problem (see
+  // notes/go-marko-feature-requests.md) and the DX decision is still open.
   "_script",
   "_subscribe",
   "_resume_branch",
@@ -34,86 +31,120 @@ const RESUME_ONLY = new Set([
   "_peek_scope_id",
   "_existing_scope",
   "_id",
+  // Emitted by <html-script>. It renders the CSP nonce from `$global.cspNonce`,
+  // which marko-go has no equivalent for (no $global yet), so it always
+  // produces the empty string here. Dropping it is exactly what the JS
+  // runtime does when no nonce is configured.
+  "_attr_nonce",
 ]);
 
 // Intrinsics this transpiler actively understands and translates.
 // `_trailers` carries real markup (the compiler defers writing closing
 // tags, e.g. `</body></html>`, past where resumability markers would go)
 // -- same reasoning as `_for_of`'s parentEndTag, not resume-only.
-const HANDLED = new Set(["_html", "_escape", "_for_of", "_if", "_template", "_trailers"]);
-
-function capitalize(s) {
-  return s.charAt(0).toUpperCase() + s.slice(1);
-}
-
-function goStringLiteral(s) {
-  let out = '"';
-  for (const ch of s) {
-    switch (ch) {
-      case "\\":
-        out += "\\\\";
-        break;
-      case '"':
-        out += '\\"';
-        break;
-      case "\n":
-        out += "\\n";
-        break;
-      case "\t":
-        out += "\\t";
-        break;
-      case "\r":
-        out += "\\r";
-        break;
-      default:
-        out += ch;
-    }
-  }
-  return out + '"';
-}
+const HANDLED = new Set([
+  "_html",
+  "_escape",
+  "_for_of",
+  "_if",
+  "_template",
+  "_trailers",
+  // Body content. `_content` and `_content_resume` differ only in whether
+  // the closure is registered for client-side resume; both wrap the same
+  // renderer function, so they translate identically to a runtime.Body.
+  "_content",
+  "_content_resume",
+  "_dynamic_tag",
+  "_attrs",
+  "_attr",
+  "_attr_class",
+  "_attr_style",
+]);
 
 /**
  * Transpiles the html-target JS produced by @marko/compiler +
  * @marko/runtime-tags into Go source calling into the `runtime` package.
- * Only the subset described in PLAN.md is supported; anything else
- * throws UnsupportedError rather than emitting something wrong.
+ * Only the subset described in PLAN.md / notes/fr1-design.md is supported;
+ * anything else throws UnsupportedError rather than emitting something wrong.
  *
- * @param {string} jsSource
- * @param {{goPackage: string}} opts
- * @returns {string} Go source
+ * @param {string} jsSource compiled html-target JS
+ * @param {object} opts
+ * @param {string} opts.goPackage    package clause for the generated file
+ * @param {string} opts.templateName kebab basename, e.g. "ui-button"
+ * @param {string} opts.pascalName   e.g. "UiButton"
+ * @param {{name,goType}[]} [opts.inputFields] parsed from `interface Input`
+ * @param {(spec: string) => ({pkgName,pascalName,goImportPath,sameDir}|null)} [opts.resolveTag]
+ *        maps a `.marko` import specifier (relative to this file) to the
+ *        registry entry for the template it names. Required for any file
+ *        that composes other tags.
+ * @returns {{code: string, imports: string[]}} Go source + import paths used
  */
-export function transpile(jsSource, { goPackage }) {
-  const ast = parse(jsSource, { sourceType: "module" });
+export function transpile(jsSource, opts) {
+  const {
+    goPackage,
+    templateName,
+    pascalName,
+    inputFields = [],
+    resolveTag = () => null,
+  } = opts;
 
-  // 1. Map local import bindings to their intrinsic names, and split them
-  //    into "drop" vs "handle" sets. Anything imported from the runtime
-  //    that isn't in either list is a construct we don't yet support --
-  //    fail fast at the import, before we even look at the body.
+  const ast = parse(jsSource, { sourceType: "module" });
+  const constPrefix = camelCase(templateName);
+  const structName = `${pascalName}Input`;
+  const inputFieldTypes = new Map(inputFields.map((f) => [f.name, f.goType]));
+
+  // 1. Imports. Two flavours appear in compiled output:
+  //    a) `import {_html, ...} from "@marko/runtime-tags/html"` -- intrinsics.
+  //    b) `import _uiButton from "../elements/ui-button.marko"` -- a custom
+  //       tag. Marko names the binding after the kebab file name in camel
+  //       case with a leading underscore; we key off the specifier, not the
+  //       binding name, and resolve it through the project registry.
   const localToIntrinsic = new Map();
+  const localToTag = new Map();
   for (const node of ast.program.body) {
-    if (
-      t.isImportDeclaration(node) &&
-      /runtime-tags\/(debug\/)?html$/.test(node.source.value)
-    ) {
+    if (!t.isImportDeclaration(node)) continue;
+    const src = node.source.value;
+    if (/runtime-tags\/(debug\/)?html$/.test(src)) {
       for (const spec of node.specifiers) {
         if (t.isImportSpecifier(spec)) {
           localToIntrinsic.set(spec.local.name, spec.imported.name);
         }
       }
+      continue;
     }
+    if (src.endsWith(".marko")) {
+      const entry = resolveTag(src);
+      if (!entry) {
+        throw new UnsupportedError(
+          `custom tag import "${src}" could not be resolved to a template in the project -- is it inside the generate root?`,
+          node,
+        );
+      }
+      const spec = node.specifiers.find((s) => t.isImportDefaultSpecifier(s));
+      if (!spec) {
+        throw new UnsupportedError(`unexpected import form for "${src}"`, node);
+      }
+      localToTag.set(spec.local.name, entry);
+      continue;
+    }
+    throw new UnsupportedError(
+      `unsupported import in compiled output: "${src}"`,
+      node,
+    );
   }
   if (localToIntrinsic.size === 0) {
     throw new UnsupportedError(
       "no import from @marko/runtime-tags/html found -- is this html-target output?",
     );
   }
-  for (const [local, intrinsic] of localToIntrinsic) {
+  for (const [, intrinsic] of localToIntrinsic) {
     if (!RESUME_ONLY.has(intrinsic) && !HANDLED.has(intrinsic)) {
       throw new UnsupportedError(
         `unsupported Marko feature: "${intrinsic}" is not part of the ported subset yet`,
       );
     }
   }
+
   const nameOf = (localName) => localToIntrinsic.get(localName);
   const isResumeOnlyCall = (node) =>
     t.isCallExpression(node) &&
@@ -123,8 +154,38 @@ export function transpile(jsSource, { goPackage }) {
     t.isCallExpression(node) &&
     t.isIdentifier(node.callee) &&
     nameOf(node.callee.name) === intrinsic;
+  const isTagCall = (node) =>
+    t.isCallExpression(node) &&
+    t.isIdentifier(node.callee) &&
+    localToTag.has(node.callee.name);
+  const isContentCall = (node) =>
+    calleeIs(node, "_content") || calleeIs(node, "_content_resume");
 
-  // 2. Find `export default _template(id, renderer, page?)`.
+  // Tracks which cross-package imports this file actually needs, so the
+  // import block only lists what's used.
+  const usedTags = new Set();
+
+  // 2. Module-level `static const` declarations. In compiled JS these are
+  //    plain top-level `const`s hoisted above the template. They become
+  //    package-level Go vars; every generated file in a directory shares one
+  //    Go package, so names are prefixed with the camelCase template name
+  //    (`uiButtonVariants`) to avoid collisions between sibling templates.
+  const moduleConsts = new Map(); // js name -> go name
+  const moduleConstDecls = [];
+  for (const node of ast.program.body) {
+    if (!t.isVariableDeclaration(node)) continue;
+    for (const decl of node.declarations) {
+      if (!t.isIdentifier(decl.id)) {
+        throw new UnsupportedError(
+          "destructured module-level declarations are not supported yet",
+          decl,
+        );
+      }
+      moduleConsts.set(decl.id.name, constPrefix + capitalize(decl.id.name));
+    }
+  }
+
+  // 3. Find `export default _template(id, renderer, page?)`.
   const exportDefault = ast.program.body.find((n) =>
     t.isExportDefaultDeclaration(n),
   );
@@ -140,7 +201,10 @@ export function transpile(jsSource, { goPackage }) {
   ) {
     throw new UnsupportedError("template renderer is not a function", renderer);
   }
-  if (renderer.params.length > 1 || (renderer.params[0] && !t.isIdentifier(renderer.params[0]))) {
+  if (
+    renderer.params.length > 1 ||
+    (renderer.params[0] && !t.isIdentifier(renderer.params[0]))
+  ) {
     throw new UnsupportedError(
       "destructured or multiple input params are not supported yet -- use a single `input` identifier",
       renderer,
@@ -148,19 +212,26 @@ export function transpile(jsSource, { goPackage }) {
   }
   const inputParamName = renderer.params[0]?.name ?? "input";
   if (!t.isBlockStatement(renderer.body)) {
-    throw new UnsupportedError("expected a block-bodied renderer function", renderer);
+    throw new UnsupportedError(
+      "expected a block-bodied renderer function",
+      renderer,
+    );
   }
 
-  // 3. Expression translator: JS -> Go, for the narrow set of shapes that
-  //    show up in compiled Marko output (member access into `input` or a
-  //    loop variable, literals, simple operators). Field access is
-  //    capitalized to match Go's exported-field convention -- see the
-  //    Input-struct contract in PLAN.md.
+  // 4. Expression translator: JS -> Go, for the narrow set of shapes that
+  //    show up in compiled Marko output.
   function translateExpr(node) {
     if (t.isIdentifier(node)) {
-      return node.name === inputParamName ? "input" : node.name;
+      if (node.name === inputParamName) return "input";
+      if (node.name === "undefined") return "nil";
+      const modConst = moduleConsts.get(node.name);
+      return modConst ?? node.name;
     }
-    if (t.isMemberExpression(node) && !node.computed) {
+    if (t.isMemberExpression(node)) {
+      if (node.computed) {
+        // `variants[key]` -- a Go map/slice index. Identical syntax.
+        return `${translateExpr(node.object)}[${translateExpr(node.property)}]`;
+      }
       const propName = node.property.name;
       if (propName === "length") {
         return `len(${translateExpr(node.object)})`;
@@ -171,20 +242,41 @@ export function transpile(jsSource, { goPackage }) {
     if (t.isNumericLiteral(node)) return String(node.value);
     if (t.isBooleanLiteral(node)) return String(node.value);
     if (t.isNullLiteral(node)) return "nil";
-    if (t.isArrayExpression(node) && node.elements.every((e) => e && !t.isSpreadElement(e))) {
+    if (
+      t.isArrayExpression(node) &&
+      node.elements.every((e) => e && !t.isSpreadElement(e))
+    ) {
       // Element type is unknown from JS alone -- see the []any contract
-      // for Input slice fields in PLAN.md.
+      // for Input slice fields in PLAN.md. runtime.AttrClass accepts
+      // []any, which is what makes `class=[a, b, c]` work.
       return `[]any{${node.elements.map(translateExpr).join(", ")}}`;
     }
+    if (t.isObjectExpression(node)) {
+      return translateObjectAsMap(node);
+    }
     if (t.isBinaryExpression(node)) {
-      const op = node.operator === "===" ? "==" : node.operator === "!==" ? "!=" : node.operator;
+      const op =
+        node.operator === "===" ? "==" : node.operator === "!==" ? "!=" : node.operator;
       return `${translateExpr(node.left)} ${op} ${translateExpr(node.right)}`;
     }
     if (t.isLogicalExpression(node)) {
+      if (node.operator === "??") {
+        // Go has no nullish coalescing and no "unset" for a struct field.
+        // runtime.Or substitutes the zero value as the "absent" test; the
+        // divergence from JS (where `""` and `0` are NOT nullish) is
+        // documented on runtime.Or itself.
+        return `runtime.Or(${translateExpr(node.left)}, ${translateExpr(node.right)})`;
+      }
       return `${translateExpr(node.left)} ${node.operator} ${translateExpr(node.right)}`;
     }
     if (t.isUnaryExpression(node) && node.operator === "!") {
       return `!${translateExpr(node.argument)}`;
+    }
+    if (t.isConditionalExpression(node)) {
+      throw new UnsupportedError(
+        "the ternary operator has no Go expression equivalent -- rewrite it as an <if>/<else> in the template",
+        node,
+      );
     }
     throw new UnsupportedError(
       `expression of type ${node.type} is not part of the ported subset yet`,
@@ -192,10 +284,50 @@ export function transpile(jsSource, { goPackage }) {
     );
   }
 
-  // 4. `_html(arg)` -> one or more `w.HTML(...)` statements. `arg` is
+  /**
+   * ObjectExpression -> `map[string]any{...}`. Used for `attrs={...}` values
+   * and any other free-standing object. Keys become string literals
+   * (identifier keys use their own name). All-string values collapse to
+   * `map[string]string`, which is what module-level lookup tables like
+   * `variants`/`sizes` need so that `variants[k]` is a usable Go string.
+   */
+  function translateObjectAsMap(node) {
+    const entries = [];
+    let allStrings = node.properties.length > 0;
+    for (const prop of node.properties) {
+      if (t.isSpreadElement(prop)) {
+        throw new UnsupportedError(
+          "object spread is only supported inside _attrs(...)",
+          prop,
+        );
+      }
+      if (!t.isObjectProperty(prop) || prop.computed) {
+        throw new UnsupportedError(
+          "only plain string/identifier-keyed object properties are supported",
+          prop,
+        );
+      }
+      const key = t.isIdentifier(prop.key)
+        ? prop.key.name
+        : t.isStringLiteral(prop.key)
+          ? prop.key.value
+          : null;
+      if (key === null) {
+        throw new UnsupportedError("unsupported object key", prop.key);
+      }
+      if (!t.isStringLiteral(prop.value)) allStrings = false;
+      entries.push(`${goStringLiteral(key)}: ${translateExpr(prop.value)}`);
+    }
+    const mapType = allStrings ? "map[string]string" : "map[string]any";
+    if (entries.length === 0) return "map[string]any{}";
+    return `${mapType}{\n${entries.map((e) => "\t" + e + ",").join("\n")}\n}`;
+  }
+
+  // 5. `_html(arg)` -> one or more `w.HTML(...)` statements. `arg` is
   //    either a plain string (static markup) or a template literal mixing
-  //    static text with `_escape(...)` (dynamic text) and resume-only
-  //    markers (`_sep`, `_el_resume`), which are dropped.
+  //    static text with dynamic interpolations: `_escape(...)` for text,
+  //    `_attrs`/`_attr*` for attribute groups, and resume-only markers
+  //    (`_el_resume`, `_sep`, `_attr_nonce`), which are dropped.
   function translateHtmlCall(node) {
     const [arg] = node.arguments;
     if (t.isStringLiteral(arg)) {
@@ -209,11 +341,23 @@ export function transpile(jsSource, { goPackage }) {
         if (expr === undefined) return;
         if (calleeIs(expr, "_escape")) {
           out.push(`w.HTML(runtime.Escape(${translateExpr(expr.arguments[0])}))`);
+        } else if (calleeIs(expr, "_attrs")) {
+          out.push(`w.HTML(${translateAttrs(expr)})`);
+        } else if (calleeIs(expr, "_attr_class")) {
+          out.push(`w.HTML(runtime.AttrClass(${translateExpr(expr.arguments[0])}))`);
+        } else if (calleeIs(expr, "_attr_style")) {
+          out.push(`w.HTML(runtime.AttrStyle(${translateExpr(expr.arguments[0])}))`);
+        } else if (calleeIs(expr, "_attr")) {
+          // _attr(name, value) -> ` name="escaped"`, or "" when falsy.
+          const [nameArg, valArg] = expr.arguments;
+          out.push(
+            `w.HTML(runtime.Attr(${translateExpr(nameArg)}, ${translateExpr(valArg)}))`,
+          );
         } else if (isResumeOnlyCall(expr)) {
           // resumability marker -- contributes nothing to a fresh mount
         } else {
           throw new UnsupportedError(
-            "unsupported expression inside _html template literal -- only _escape(...) is handled",
+            "unsupported expression inside _html template literal",
             expr,
           );
         }
@@ -223,7 +367,49 @@ export function transpile(jsSource, { goPackage }) {
     throw new UnsupportedError("_html called with a non-literal argument", node);
   }
 
-  // 5. `_for_of(items, cb, by, scopeId, accessor, sg1, sg2, sg3,
+  /**
+   * `_attrs({href, class, ...input.attrs}, tagName, scopeId, elementName)`
+   * -> `runtime.Attrs(runtime.A{"href", ...}, ..., input.Attrs)`.
+   *
+   * Signature per runtime-tags/src/html/attrs.ts: only the first argument
+   * carries data; the rest are element/scope identifiers used to register
+   * resume state, which marko-go drops. Property ORDER matters (it decides
+   * attribute order in the output) and so does spread position (later
+   * entries win), so the items are passed positionally and runtime.Attrs
+   * does the merge.
+   */
+  function translateAttrs(node) {
+    const [objArg] = node.arguments;
+    if (!t.isObjectExpression(objArg)) {
+      // A bare expression (e.g. `_attrs(input.attrs, ...)`) is still a
+      // valid single spread item.
+      return `runtime.Attrs(${translateExpr(objArg)})`;
+    }
+    const items = [];
+    for (const prop of objArg.properties) {
+      if (t.isSpreadElement(prop)) {
+        // `...input.attrs` -- a map[string]any spread; runtime.Attrs
+        // expands it with sorted keys for deterministic output.
+        items.push(translateExpr(prop.argument));
+        continue;
+      }
+      if (!t.isObjectProperty(prop) || prop.computed) {
+        throw new UnsupportedError("unsupported property inside _attrs", prop);
+      }
+      const key = t.isIdentifier(prop.key)
+        ? prop.key.name
+        : t.isStringLiteral(prop.key)
+          ? prop.key.value
+          : null;
+      if (key === null) throw new UnsupportedError("unsupported _attrs key", prop.key);
+      items.push(
+        `runtime.A{Name: ${goStringLiteral(key)}, Value: ${translateExpr(prop.value)}}`,
+      );
+    }
+    return `runtime.Attrs(${items.join(", ")})`;
+  }
+
+  // 6. `_for_of(items, cb, by, scopeId, accessor, sg1, sg2, sg3,
   //    parentEndTag, singleNode)` -> runtime.ForOf(items, func(item any)
   //    {...}) followed by the parent's closing tag, if any.
   //
@@ -262,7 +448,7 @@ export function transpile(jsSource, { goPackage }) {
     return out.join("\n");
   }
 
-  // 6. `_if(cb, ...)` unwraps to whatever native `if` statement is inside
+  // 7. `_if(cb, ...)` unwraps to whatever native `if` statement is inside
   //    the callback -- the wrapper is entirely resumability bookkeeping.
   function translateIfWrapper(node) {
     const [cb] = node.arguments;
@@ -294,8 +480,114 @@ export function transpile(jsSource, { goPackage }) {
     return out;
   }
 
-  // 7. Statement-level translator, used for the renderer body and every
-  //    nested block (for-of callbacks, if branches).
+  // 8. `_content(id, renderer, parentScopeId)` / `_content_resume(...)`
+  //    -> a runtime.Body closure. This is a <tag> body: the caller decides
+  //    where (and whether) it renders. The `w` in scope is captured by the
+  //    closure parameter so nested bodies never see a stale writer.
+  function translateContent(node) {
+    const [, renderer] = node.arguments;
+    if (
+      !(t.isArrowFunctionExpression(renderer) || t.isFunctionExpression(renderer))
+    ) {
+      throw new UnsupportedError("_content body is not a function", node);
+    }
+    if (!t.isBlockStatement(renderer.body)) {
+      throw new UnsupportedError("expected a block-bodied _content renderer", renderer);
+    }
+    const body = translateBlockStatements(renderer.body.body);
+    return `func(w *runtime.Writer) {\n${indent(body)}\n}`;
+  }
+
+  // 9. Custom tag call: `_uiButton({variant: "x", content: _content(...)})`
+  //    -> `elements.UiButton(w, elements.UiButtonInput{Variant: "x", ...})`.
+  //    Object keys map to struct fields (capitalized); omitted fields keep
+  //    their Go zero value, which is exactly Marko's "attribute not passed".
+  function translateTagCall(node) {
+    const entry = localToTag.get(node.callee.name);
+    usedTags.add(entry);
+    const qualifier = entry.sameDir ? "" : `${entry.alias}.`;
+    const [argObj] = node.arguments;
+    const fields = [];
+    if (argObj && !(t.isObjectExpression(argObj) && argObj.properties.length === 0)) {
+      if (!t.isObjectExpression(argObj)) {
+        throw new UnsupportedError(
+          "custom tag called with a non-literal input object -- not supported yet",
+          node,
+        );
+      }
+      for (const prop of argObj.properties) {
+        if (!t.isObjectProperty(prop) || prop.computed) {
+          throw new UnsupportedError(
+            "spread and computed properties are not supported in a custom tag's input",
+            prop,
+          );
+        }
+        const key = t.isIdentifier(prop.key)
+          ? prop.key.name
+          : t.isStringLiteral(prop.key)
+            ? prop.key.value
+            : null;
+        if (key === null) throw new UnsupportedError("unsupported tag input key", prop.key);
+        const goField = goFieldName(key);
+        const declaredType = entry.inputFields?.get(goField);
+        let value;
+        if (isContentCall(prop.value)) {
+          value = translateContent(prop.value);
+        } else if (declaredType === "map[string]any" && t.isObjectExpression(prop.value)) {
+          // `attrs={...}` -- the callee declares map[string]any, so force
+          // that even when every value happens to be a string.
+          value = translateObjectAsMap(prop.value).replace(
+            /^map\[string\]string/,
+            "map[string]any",
+          );
+        } else {
+          value = translateExpr(prop.value);
+        }
+        fields.push(`${goField}: ${value},`);
+      }
+    }
+    const structLit = `${qualifier}${entry.pascalName}Input`;
+    if (fields.length === 0) {
+      return `${qualifier}${entry.pascalName}(w, ${structLit}{})`;
+    }
+    return [
+      `${qualifier}${entry.pascalName}(w, ${structLit}{`,
+      indent(fields),
+      `})`,
+    ].join("\n");
+  }
+
+  // 10. `_dynamic_tag(scopeId, accessor, contentExpr, {}, 0, 0, guard)`
+  //     renders `<${input.content}/>` -- a body passed in by the caller.
+  //     In the ported subset the only supported shape is a direct
+  //     `input.<field>` of type Marko.Body; anything else (a dynamic
+  //     component reference) has no Go analogue.
+  function translateDynamicTag(node) {
+    const contentExpr = node.arguments[2];
+    if (
+      !t.isMemberExpression(contentExpr) ||
+      contentExpr.computed ||
+      !t.isIdentifier(contentExpr.object) ||
+      contentExpr.object.name !== inputParamName
+    ) {
+      throw new UnsupportedError(
+        "dynamic tags are only supported for a body passed as input (e.g. `<${input.content}/>`)",
+        contentExpr ?? node,
+      );
+    }
+    const field = capitalize(contentExpr.property.name);
+    const declared = inputFieldTypes.get(field);
+    if (declared && declared !== "runtime.Body" && declared !== "any") {
+      throw new UnsupportedError(
+        `\`input.${contentExpr.property.name}\` is rendered as a body but declared as ${declared} -- declare it as Marko.Body`,
+        contentExpr,
+      );
+    }
+    return `if input.${field} != nil {\n\tinput.${field}(w)\n}`;
+  }
+
+  // 11. Statement-level translator, used for the renderer body and every
+  //     nested block (for-of callbacks, if branches, tag bodies).
   function translateStatement(node) {
     if (t.isVariableDeclaration(node)) {
       const lines = [];
@@ -340,6 +632,10 @@ export function transpile(jsSource, { goPackage }) {
           out.push(translateForOf(expr));
         } else if (calleeIs(expr, "_if")) {
           out.push(translateIfWrapper(expr));
+        } else if (calleeIs(expr, "_dynamic_tag")) {
+          out.push(translateDynamicTag(expr));
+        } else if (isTagCall(expr)) {
+          out.push(translateTagCall(expr));
         } else {
           throw new UnsupportedError(
             `unsupported statement: expression of type ${expr.type}`,
@@ -359,20 +655,111 @@ export function transpile(jsSource, { goPackage }) {
   }
 
   function indent(lines) {
-    return lines.map((l) => l.split("\n").map((ln) => "\t" + ln).join("\n")).join("\n");
+    return lines
+      .map((l) => l.split("\n").map((ln) => (ln === "" ? "" : "\t" + ln)).join("\n"))
+      .join("\n");
+  }
+
+  // Module consts are translated last so `translateExpr` (and therefore
+  // moduleConsts / usedTags) is fully wired up first.
+  for (const node of ast.program.body) {
+    if (!t.isVariableDeclaration(node)) continue;
+    for (const decl of node.declarations) {
+      moduleConstDecls.push(
+        `var ${moduleConsts.get(decl.id.name)} = ${translateExpr(decl.init)}`,
+      );
+    }
   }
 
   const bodyGo = translateBlockStatements(renderer.body.body);
 
-  return `// Code generated by marko-go/codegen. DO NOT EDIT.
-package ${goPackage}
+  // 12. Assemble. Import block lists the runtime plus one aliased import
+  //     per cross-directory tag dependency actually used.
+  const importLines = ['"github.com/svallory/go-marko/runtime"'];
+  const seenPaths = new Set();
+  for (const entry of [...usedTags].sort((a, b) =>
+    a.goImportPath.localeCompare(b.goImportPath),
+  )) {
+    if (entry.sameDir || seenPaths.has(entry.goImportPath)) continue;
+    seenPaths.add(entry.goImportPath);
+    const needsAlias = entry.alias !== entry.pkgName;
+    importLines.push(
+      needsAlias
+        ? `${entry.alias} "${entry.goImportPath}"`
+        : `"${entry.goImportPath}"`,
+    );
+  }
+  const importBlock =
+    importLines.length === 1
+      ? `import ${importLines[0]}`
+      : `import (\n${importLines.map((l) => "\t" + l).join("\n")}\n)`;
 
-import "github.com/svallory/go-marko/runtime"
+  const parts = [
+    "// Code generated by marko-go. DO NOT EDIT.",
+    `package ${goPackage}`,
+    "",
+    importBlock,
+    "",
+  ];
+  if (moduleConstDecls.length > 0) {
+    // `static const` in Marko is module-scoped and evaluated once. Go
+    // package vars are the closest equivalent (a Go `const` can't hold a
+    // composite literal).
+    parts.push(moduleConstDecls.join("\n\n"), "");
+  }
+  parts.push(renderInputStruct(structName, inputFields), "");
+  parts.push(
+    `// ${pascalName} renders the ${templateName}.marko template into w.`,
+    `func ${pascalName}(w *runtime.Writer, input ${structName}) {`,
+    indent(bodyGo),
+    "}",
+    "",
+  );
 
-// Render renders the template into w. See input.go for the Input struct
-// this expects.
-func Render(w *runtime.Writer, input Input) {
-${indent(bodyGo)}
+  return { code: alignKeyValueRuns(parts.join("\n")), imports: [...seenPaths] };
 }
-`;
+
+/**
+ * gofmt aligns the values of consecutive single-line `Key: value,` entries
+ * inside a composite literal (and `Name Type` inside a struct type). We emit
+ * gofmt-clean Go directly rather than shelling out to the Go toolchain, so
+ * this reproduces that one rule: within each maximal run of same-indent
+ * lines matching `key: value,` -- broken by any other line, including a
+ * multi-line value's opening brace -- pad the key column to the widest key.
+ *
+ * gofmt also breaks a run when a line is "too far" from its neighbours, but
+ * that threshold only applies to comment alignment, not composite literals.
+ */
+export function alignKeyValueRuns(code) {
+  const lines = code.split("\n");
+  // Key is a bare Go identifier or a simple quoted string; the entry must
+  // end in a comma. That's narrow enough that a `w.HTML("http://...")` line
+  // (which also contains a colon) can never be mistaken for a literal entry.
+  const KV = /^(\t*)([A-Za-z_][A-Za-z0-9_]*|"[^"\\]*"): (\S.*?)(,)$/;
+  let i = 0;
+  while (i < lines.length) {
+    const m = KV.exec(lines[i]);
+    // A value ending in `{` opens a multi-line literal; gofmt treats such a
+    // line as breaking the run rather than joining it.
+    if (!m || m[3].endsWith("{")) {
+      i++;
+      continue;
+    }
+    const indentStr = m[1];
+    const run = [];
+    let j = i;
+    for (; j < lines.length; j++) {
+      const mm = KV.exec(lines[j]);
+      if (!mm || mm[1] !== indentStr || mm[3].endsWith("{")) break;
+      run.push(mm);
+    }
+    if (run.length > 1) {
+      const width = Math.max(...run.map((r) => r[2].length));
+      run.forEach((r, k) => {
+        lines[i + k] = `${r[1]}${r[2]}:${" ".repeat(width - r[2].length + 1)}${r[3]}${r[4]}`;
+      });
+    }
+    i = j > i ? j : i + 1;
+  }
+  return lines.join("\n");
 }

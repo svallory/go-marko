@@ -1,27 +1,31 @@
 #!/usr/bin/env node
-import fs from "node:fs";
 import path from "node:path";
-import { compileMarko } from "./compile.mjs";
-import { transpile, UnsupportedError } from "./transpile.mjs";
+import { generateProject } from "./project.mjs";
+import { UnsupportedError } from "./errors.mjs";
 
-const [, , markoPath, outDir, goPackage = "views"] = process.argv;
+const [, , command, dir] = process.argv;
 
-if (!markoPath || !outDir) {
-  console.error("usage: marko-go-codegen <template.marko> <out-dir> [go-package-name]");
+if (command !== "generate" || !dir) {
+  console.error("usage: marko-go generate <dir>");
+  console.error("");
+  console.error("  Walks <dir> for **/*.marko, compiles each one, and writes");
+  console.error("  <name>.marko.go next to the source. Requires a go.mod at or");
+  console.error("  above <dir> so Go import paths can be derived.");
   process.exit(1);
 }
 
-const js = await compileMarko(markoPath);
-
 try {
-  const go = transpile(js, { goPackage });
-  fs.mkdirSync(outDir, { recursive: true });
-  const outFile = path.join(outDir, "render.go");
-  fs.writeFileSync(outFile, go);
-  console.log(`wrote ${outFile}`);
+  const results = await generateProject(dir);
+  const root = path.resolve(dir);
+  for (const r of results) {
+    console.log(`  ${path.relative(root, r.outPath)}`);
+  }
+  console.log(
+    `marko-go: generated ${results.length} file${results.length === 1 ? "" : "s"} from ${root}`,
+  );
 } catch (err) {
   if (err instanceof UnsupportedError) {
-    console.error(`${markoPath}: ${err.message}`);
+    console.error(`marko-go: ${err.message}`);
     process.exit(1);
   }
   throw err;

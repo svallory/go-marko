@@ -2,14 +2,17 @@
   "name": "@svallory/marko-go-codegen",
   "version": "1.0.0",
   "type": "module",
+  "bin": {
+    "marko-go": "./src/cli.mjs"
+  },
+  "scripts": {
+    "test": "bun test"
+  },
   "dependencies": {
     "@babel/parser": "^7.29.8",
     "@babel/traverse": "^7.29.8",
     "@babel/types": "^7.29.8",
     "@marko/compiler": "^5.42.1",
     "@marko/runtime-tags": "^6.3.42"
-  },
-  "bin": {
-    "marko-go-codegen": "./src/cli.mjs"
   }
 }
