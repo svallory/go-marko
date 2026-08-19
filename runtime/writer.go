@@ -1,11 +1,18 @@
 // Package runtime is the Go rendering target for marko-go. It implements a
 // deliberately small subset of Marko's HTML writer
 // (@marko/runtime-tags/src/html/writer.ts): synchronous, buffered, no
-// streaming, no resumability/scope-tracking, no <await>. See PLAN.md
-// for why.
+// streaming, no <await>. See PLAN.md for why.
+//
+// Resumability is supported for the wave-1 subset: resume markers, scope
+// state serialization and script entries, flushed as a byte-exact Marko 6
+// resume payload. See resume.go for the API and notes/resume-wire-contract.md
+// for the specification it implements.
 package runtime
 
-import "strings"
+import (
+	"errors"
+	"strings"
+)
 
 // Writer accumulates HTML output. It is the Go analogue of Marko's `_html`
 // write target, minus the async/streaming machinery -- everything here is
@@ -13,7 +20,20 @@ import "strings"
 type Writer struct {
 	sb      strings.Builder
 	globals any
+
+	// res is the resume channel, created lazily so a render that never uses
+	// resumability pays nothing for it. See resume.go.
+	res *resumeState
+	// trailers buffers markup that must land AFTER the resume payload
+	// script -- the closing `</body></html>`. See Writer.Trailer.
+	trailers strings.Builder
 }
+
+// errInvalidResumeID is returned by FlushResume when SetResumeIDs was given a
+// runtime or render id that does not match /^[_a-zA-Z][_a-zA-Z0-9]*$/. The ids
+// are interpolated into the payload unescaped, so this is enforced rather than
+// escaped around.
+var errInvalidResumeID = errors.New("runtime: runtime/render id must match /^[_a-zA-Z][_a-zA-Z0-9]*$/")
 
 // New returns an empty Writer.
 func New() *Writer {
@@ -49,7 +69,11 @@ func (w *Writer) Globals() any {
 	return w.globals
 }
 
-// String returns everything written so far.
+// String returns everything written so far, with any buffered trailer markup
+// appended. Trailers are flushed here as a safety net for renders that never
+// call FlushResume; calling FlushResume first is the normal path and makes
+// this a plain read.
 func (w *Writer) String() string {
+	w.flushTrailers()
 	return w.sb.String()
 }
