@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 )
 
@@ -16,8 +17,18 @@ func Truthy(val any) bool {
 
 // isFalsy replicates JS truthiness for the value types a marko-go template
 // can produce: nil, bool, string, and Go's numeric types. Anything else
-// (structs, slices, maps) is treated as truthy, matching JS object
-// semantics.
+// (structs, non-nil pointers, maps, slices) is treated as truthy, matching
+// JS object semantics.
+//
+// A NIL POINTER is falsy. This matters because an optional attr tag
+// (`head?: Marko.AttrTag<{...}>`) is generated as a POINTER field, and the
+// compiled JS tests it with a bare `if (input.head)` -- which reaches here
+// as `Truthy(input.Head)`. Go boxes a typed nil pointer into a NON-nil
+// interface, so `case nil` below never sees it; only reflection can. Same
+// reasoning for nil maps/slices/funcs/interfaces: those are the Go
+// representation of an absent value, i.e. JS `undefined`, which is falsy.
+// (JS arrays/objects are truthy even when empty, so an EMPTY-but-non-nil
+// map or slice stays truthy -- only nil-ness is tested.)
 func isFalsy(val any) bool {
 	switch v := val.(type) {
 	case nil:
@@ -50,6 +61,19 @@ func isFalsy(val any) bool {
 		return v == 0
 	case float64:
 		return v == 0
+	default:
+		return isNilValue(val)
+	}
+}
+
+// isNilValue reports whether val is a nil pointer, map, slice, func, chan or
+// interface boxed inside a non-nil `any`. See isFalsy for why this needs
+// reflection.
+func isNilValue(val any) bool {
+	rv := reflect.ValueOf(val)
+	switch rv.Kind() {
+	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan, reflect.Interface, reflect.UnsafePointer:
+		return rv.IsNil()
 	default:
 		return false
 	}
@@ -87,6 +111,27 @@ func isZero(val any) bool {
 	default:
 		return false
 	}
+}
+
+// String narrows an `any`-typed template expression to the Go `string` a
+// generated Input field declares.
+//
+// It exists because JS `&&`/`||` return an OPERAND, not a bool: an
+// expression like `class=($global.path === "/x" && "active")` is either the
+// class string or `false`, so it translates to runtime.And, which returns
+// `any`. When the receiving field is declared `class?: string`, that `any`
+// has to become a string somewhere, and only the call site knows the target
+// type.
+//
+// A FALSY value becomes "" -- `false`, `nil`, and `0` all mean "no class
+// here", and "" is the Go zero value the field would have held had the
+// attribute been omitted entirely. A truthy value is coerced with the same
+// rules as text interpolation (toJSString).
+func String(val any) string {
+	if isFalsy(val) {
+		return ""
+	}
+	return toJSString(val)
 }
 
 // toJSString replicates JS's `val + ""` string coercion for the value

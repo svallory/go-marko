@@ -5,6 +5,7 @@ import { compileMarko } from "./compile.mjs";
 import { transpile } from "./transpile.mjs";
 import { UnsupportedError } from "./errors.mjs";
 import { parseInputInterface } from "./inputstruct.mjs";
+import { findGlobals, renderGlobalsFile } from "./globals.mjs";
 import { pascalCase, sanitizeNpmPackageName, sanitizePackageName } from "./names.mjs";
 
 /** Directory name every vendored (node_modules) template's Go lands under. */
@@ -235,6 +236,21 @@ export async function generateProject(root, { write = true, bestEffort = false }
   const results = [];
   const errors = [];
 
+  // FR10: the project's `Marko.Global` declaration, if it has one. Found
+  // once for the whole run (it is a project-wide singleton) and handed to
+  // every template, since ANY of them may read `$global`. A project without
+  // one is fine -- templates that then use `$global` fail with a message
+  // naming the file to create.
+  const globals = findGlobals(abs, mod);
+  if (globals) {
+    const code = renderGlobalsFile(globals);
+    if (write) {
+      fs.mkdirSync(path.dirname(globals.outPath), { recursive: true });
+      fs.writeFileSync(globals.outPath, code);
+    }
+    results.push({ markoPath: globals.dtsPath, outPath: globals.outPath, code });
+  }
+
   // Vendor (node_modules) templates are discovered lazily, while resolving
   // imports of project templates (or of OTHER vendor templates -- a package
   // tag can import a sibling tag from its own package). `registry` is a Map,
@@ -310,6 +326,29 @@ export async function generateProject(root, { write = true, bestEffort = false }
       };
     };
 
+    // The globals struct lives in ONE package; a template in another
+    // package has to import it. Reuse the same per-file alias table as tag
+    // imports so a name clash between the globals package and a tag package
+    // is resolved the same way.
+    const resolveGlobals = () => {
+      if (!globals) return null;
+      const sameDir = globals.goImportPath === entry.goImportPath;
+      let alias = aliasByPath.get(globals.goImportPath);
+      if (!sameDir && alias === undefined) {
+        alias = globals.pkgName;
+        for (let n = 2; takenAliases.has(alias); n++) alias = globals.pkgName + n;
+        takenAliases.add(alias);
+        aliasByPath.set(globals.goImportPath, alias);
+      }
+      return {
+        pkgName: globals.pkgName,
+        goImportPath: globals.goImportPath,
+        fieldTypes: globals.fieldTypes,
+        sameDir,
+        alias: alias ?? globals.pkgName,
+      };
+    };
+
     const { code } = transpile(js, {
       goPackage: entry.pkgName,
       templateName: entry.kebab,
@@ -317,6 +356,7 @@ export async function generateProject(root, { write = true, bestEffort = false }
       inputFields: entry.fields,
       nestedStructs: entry.nestedStructs,
       resolveTag,
+      resolveGlobals,
     });
 
     if (write) {

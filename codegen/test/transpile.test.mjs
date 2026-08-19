@@ -576,3 +576,195 @@ describe("value-position logical operators", () => {
     expect(code).toContain(`runtime.OrValue(runtime.And(input.A, input.B), "z")`);
   });
 });
+
+/**
+ * FR10 -- `$global`, the request-scoped context.
+ *
+ * Compiled JS imports it as `$global as _$global`, binds it once with
+ * `const $global = _$global()`, and then does plain member reads. The Go
+ * side pulls it off the Writer with a comma-ok assertion so a render with
+ * no globals yields the zero value instead of panicking.
+ */
+describe("$global (FR10)", () => {
+  const globalsEntry = {
+    pkgName: "ui",
+    goImportPath: "myapp/ui",
+    fieldTypes: new Map([["Path", "string"], ["Count", "float64"]]),
+    sameDir: false,
+    alias: "ui",
+  };
+  const resolveGlobals = () => globalsEntry;
+
+  test("the $global binding becomes a comma-ok assertion off the Writer", () => {
+    const code = go(`const $global = _$global();\n_html("<p>hi</p>");`, {
+      imports: ["$global as _$global"],
+      transpileOpts: { resolveGlobals },
+    });
+    expect(renderBody(code)).toContain("markoGlobal, _ := w.Globals().(ui.Globals)");
+  });
+
+  test("the globals package is imported, aliased like any cross-package dep", () => {
+    const code = go(`const $global = _$global();\n_html("<p>hi</p>");`, {
+      imports: ["$global as _$global"],
+      transpileOpts: { resolveGlobals },
+    });
+    expect(code).toContain(`\t"myapp/ui"\n`);
+  });
+
+  test("a same-package Globals is unqualified and adds no import", () => {
+    const code = go(`const $global = _$global();\n_html("<p>hi</p>");`, {
+      imports: ["$global as _$global"],
+      transpileOpts: {
+        resolveGlobals: () => ({ ...globalsEntry, sameDir: true }),
+      },
+    });
+    expect(renderBody(code)).toContain("markoGlobal, _ := w.Globals().(Globals)");
+    expect(code).not.toContain(`"myapp/ui"`);
+  });
+
+  test("member reads are capitalized and typed from the Globals fields", () => {
+    // A `string`-typed global compared with === stays a native Go
+    // comparison, which only type-checks because Path is known to be string.
+    const code = go(
+      `const $global = _$global();\n_html(\`\${_escape($global.path === "/x")}\`);`,
+      { imports: ["$global as _$global", "_escape"], transpileOpts: { resolveGlobals } },
+    );
+    expect(code).toContain(`markoGlobal.Path == "/x"`);
+  });
+
+  test("a template that never reads $global needs no globals declaration", () => {
+    const code = go(`_html("<p>hi</p>");`, {
+      transpileOpts: { resolveGlobals: () => null },
+    });
+    expect(code).toContain("w.HTML(\"<p>hi</p>\")");
+    expect(code).not.toContain("w.Globals()");
+  });
+
+  test("using $global with no global.d.ts names the file to create", () => {
+    expect(() =>
+      go(`const $global = _$global();\n_html("<p>hi</p>");`, {
+        imports: ["$global as _$global"],
+        transpileOpts: { resolveGlobals: () => null },
+      }),
+    ).toThrow(/global\.d\.ts/);
+  });
+});
+
+/**
+ * FR11 -- attr tags (`<@head>`), Marko's named sections.
+ *
+ * Caller emits `head: _attrTag({content: _content_resume(...)})`; callee
+ * declares `head?: Marko.AttrTag<{content: Marko.Body}>`, which maps to a
+ * POINTER field so `<if=input.head>` can test for absence.
+ */
+describe("attr tags (FR11)", () => {
+  const resolveTag = (spec) =>
+    spec === "../layouts/page-layout.marko"
+      ? {
+          pkgName: "layouts",
+          pascalName: "PageLayout",
+          goImportPath: "myapp/ui/layouts",
+          inputFields: new Map([
+            ["Head", "*PageLayoutInputHead"],
+            ["Content", "runtime.Body"],
+          ]),
+          sameDir: false,
+          alias: "layouts",
+        }
+      : null;
+
+  const CALL = `_pageLayout({head: _attrTag({content: _content_resume("x", () => { _html("<meta name=description>"); }, 0)})});`;
+  const opts = {
+    imports: ["_content_resume", "attrTag as _attrTag"],
+    tagImports: `import _pageLayout from "../layouts/page-layout.marko";`,
+    resolveTag,
+  };
+
+  test("the caller emits &<Callee>Input<Field>{Content: closure}", () => {
+    const body = renderBody(go(CALL, opts));
+    expect(body).toContain("Head: &layouts.PageLayoutInputHead{");
+    expect(body).toContain("Content: func(w *runtime.Writer) {");
+    expect(body).toContain(`w.HTML("<meta name=description>")`);
+  });
+
+  test("the struct name comes from the CALLEE's declared type, not a guess", () => {
+    // Renaming the callee's field type must move the caller with it.
+    const code = go(CALL, {
+      ...opts,
+      resolveTag: () => ({
+        pkgName: "layouts",
+        pascalName: "PageLayout",
+        goImportPath: "myapp/ui/layouts",
+        inputFields: new Map([["Head", "*SomethingElse"]]),
+        sameDir: false,
+        alias: "layouts",
+      }),
+    });
+    expect(code).toContain("&layouts.SomethingElse{");
+  });
+
+  test("passing <@head> to a template that declares no such section fails loudly", () => {
+    expect(() =>
+      go(CALL, {
+        ...opts,
+        resolveTag: () => ({
+          pkgName: "layouts",
+          pascalName: "PageLayout",
+          goImportPath: "myapp/ui/layouts",
+          inputFields: new Map(),
+          sameDir: false,
+          alias: "layouts",
+        }),
+      }),
+    ).toThrow(/Marko\.AttrTag/);
+  });
+
+  test("an attr-tag attribute other than content is rejected", () => {
+    expect(() =>
+      go(
+        `_pageLayout({head: _attrTag({title: "x", content: _content_resume("x", () => {}, 0)})});`,
+        opts,
+      ),
+    ).toThrow(UnsupportedError);
+  });
+
+  test("the callee tests a pointer section with != nil, not runtime.Truthy", () => {
+    const code = go(
+      `_if(() => { if (input.head) { _dynamic_tag(0, "a", input.head.content, {}, 0, 0, 0); return 0; } }, 0, "c");`,
+      {
+        imports: ["_if", "_dynamic_tag"],
+        transpileOpts: {
+          inputFields: [{ name: "Head", goType: "*WidgetInputHead", jsName: "head" }],
+          nestedStructs: [
+            { name: "WidgetInputHead", fields: [{ name: "Content", goType: "runtime.Body" }] },
+          ],
+        },
+      },
+    );
+    const body = renderBody(code);
+    expect(body).toContain("if input.Head != nil {");
+    expect(body).not.toContain("runtime.Truthy(input.Head)");
+    // The section body renders through the same nil-guarded Body call as
+    // the template's own content.
+    expect(body).toContain("if input.Head.Content != nil {");
+    expect(body).toContain("input.Head.Content(w)");
+  });
+
+  test("optional chaining on a section reads as a plain member access", () => {
+    // `input.head?.content` shows up in resume-only bookkeeping the
+    // transpiler drops, but the expression translator must still handle it.
+    const code = go(
+      `_if(() => { if (input.head) { _dynamic_tag(0, "a", input.head?.content, {}, 0, 0, 0); return 0; } }, 0, "c");`,
+      {
+        imports: ["_if", "_dynamic_tag"],
+        transpileOpts: {
+          inputFields: [{ name: "Head", goType: "*WidgetInputHead", jsName: "head" }],
+          nestedStructs: [
+            { name: "WidgetInputHead", fields: [{ name: "Content", goType: "runtime.Body" }] },
+          ],
+        },
+      },
+    );
+    expect(renderBody(code)).toContain("input.Head.Content(w)");
+  });
+});

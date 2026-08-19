@@ -64,6 +64,17 @@ export function goTypeForTS(node, ctx) {
     case "TSUnknownKeyword":
       return "any";
     case "TSArrayType": {
+      // A REPEATED attr tag (`tab?: Marko.AttrTag<{…}>[]`) is passed many
+      // times and iterated by the callee. FR11 scopes to a single optional
+      // section, and nothing in the transpiler knows how to accumulate
+      // repeats, so it fails here rather than emitting a `[]*T` field that
+      // no caller could ever fill.
+      if (isAttrTagNode(node.elementType)) {
+        throw new UnsupportedError(
+          "repeated attr tags (`Marko.AttrTag<...>[]`) are not part of the ported subset yet -- only a single optional attr tag is supported",
+          node,
+        );
+      }
       // The element carries the SAME ctx: `events: {…}[]` names its element
       // struct after the field (`CounterInputEvents`), with no attempt at
       // depluralization -- mechanical and predictable beats clever.
@@ -94,7 +105,13 @@ export function goTypeForTS(node, ctx) {
       // Marko's ambient namespace. `Marko.Body` is a renderable body --
       // marko-go models it as a plain closure over the Writer.
       if (name === "Marko.Body") return "runtime.Body";
-      if (name === "Marko.HTMLAttributes" || name === "Marko.AttrTag") return "map[string]any";
+      if (name === "Marko.HTMLAttributes") return "map[string]any";
+      // `head?: Marko.AttrTag<{ content: Marko.Body }>` -- a named section
+      // (`<@head>`). It becomes a POINTER to a generated struct, because
+      // "was it passed at all?" is load-bearing: the compiled JS tests it
+      // with a bare `if (input.head)`, and nil is the only Go value that
+      // distinguishes an absent section from an empty one.
+      if (name === "Marko.AttrTag") return attrTagGoType(node, ctx);
       if (name === "Array" && node.typeParameters?.params?.length === 1) {
         return goTypeForTS(
           { type: "TSArrayType", elementType: node.typeParameters.params[0] },
@@ -127,6 +144,59 @@ export function goTypeForTS(node, ctx) {
  */
 export function nestedStructName(owner, jsField) {
   return owner + goFieldName(jsField);
+}
+
+/** Whether a type node is a `Marko.AttrTag<...>` reference. */
+function isAttrTagNode(node) {
+  return (
+    node?.type === "TSTypeReference" && typeRefName(node.typeName) === "Marko.AttrTag"
+  );
+}
+
+/**
+ * `Marko.AttrTag<{ content: Marko.Body }>` -> `*<Outer><Field>` plus the
+ * struct declaration it points at, e.g. `head` on `PageLayoutInput` becomes
+ * `Head *PageLayoutInputHead` with `type PageLayoutInputHead struct { Content
+ * runtime.Body }`.
+ *
+ * The supported shape is deliberately narrow (FR11): ONE optional attr tag
+ * carrying body content. Repeated attr tags (`Marko.AttrTag<...>[]`, which
+ * the caller passes multiple times and the callee iterates) and attr-tag
+ * attributes beyond `content` have no Go shape decided yet, so they fail
+ * loudly instead of generating something the transpiler can't fill in.
+ */
+function attrTagGoType(node, ctx) {
+  const params = node.typeParameters?.params ?? [];
+  if (!ctx) {
+    throw new UnsupportedError(
+      "Marko.AttrTag needs a named owner struct to generate its Go type",
+      node,
+    );
+  }
+  if (params.length !== 1 || params[0].type !== "TSTypeLiteral") {
+    throw new UnsupportedError(
+      "Marko.AttrTag must be written as `Marko.AttrTag<{ content: Marko.Body }>`",
+      node,
+    );
+  }
+  const members = params[0].members ?? [];
+  const bad = members.find(
+    (m) =>
+      !t.isTSPropertySignature(m) ||
+      memberKeyName(m) !== "content" ||
+      goTypeForTS(m.typeAnnotation?.typeAnnotation) !== "runtime.Body",
+  );
+  if (bad || members.length !== 1) {
+    throw new UnsupportedError(
+      "only `Marko.AttrTag<{ content: Marko.Body }>` is supported so far -- attr-tag attributes other than `content` are not part of the ported subset yet",
+      node,
+    );
+  }
+  const structName = nestedStructName(ctx.owner, ctx.field);
+  ctx.nested.set(structName, [
+    { jsName: "content", name: "Content", goType: "runtime.Body", optional: false },
+  ]);
+  return `*${structName}`;
 }
 
 function isNamedStruct(goType, ctx) {

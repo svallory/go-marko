@@ -6,6 +6,19 @@ import { goFieldName, renderInputStruct } from "./inputstruct.mjs";
 
 export { UnsupportedError };
 
+/**
+ * Go name for the request context inside a generated render func. The JS
+ * binding is `$global`, which is not a legal Go identifier, so it is
+ * renamed. `markoGlobal` is prefixed rather than plain `global` so a
+ * template that declares its OWN variable named `global` (legal Marko, and
+ * translated to a Go local under its own name) cannot shadow the request
+ * context.
+ */
+const GLOBALS_VAR = "markoGlobal";
+
+/** Go type name generated for `Marko.Global` -- must match globals.mjs. */
+const GLOBALS_TYPE = "Globals";
+
 // Intrinsics whose entire purpose is resumability/scope-tracking bookkeeping.
 // Since marko-go never hydrates -- every page mounts fresh -- these are
 // always safe to drop. This is *not* a general optimization; it depends on
@@ -59,6 +72,13 @@ const HANDLED = new Set([
   "_attr",
   "_attr_class",
   "_attr_style",
+  // FR10. `$global as _$global` is imported as a NAMED intrinsic without a
+  // leading underscore; `const $global = _$global()` binds it once at the
+  // top of the renderer and every `$global.x` is a plain member read.
+  "$global",
+  // FR11. `attrTag as _attrTag` wraps a named section's payload on the
+  // CALLER side: `head: _attrTag({ content: _content_resume(...) })`.
+  "attrTag",
 ]);
 
 /**
@@ -81,6 +101,10 @@ const HANDLED = new Set([
  *        maps a `.marko` import specifier (relative to this file) to the
  *        registry entry for the template it names. Required for any file
  *        that composes other tags.
+ * @param {() => ({pkgName,goImportPath,fieldTypes,sameDir,alias}|null)} [opts.resolveGlobals]
+ *        the project's generated Globals type (FR10), or null when the
+ *        project declares no `Marko.Global`. Only consulted when the template
+ *        actually reads `$global`.
  * @returns {{code: string, imports: string[]}} Go source + import paths used
  */
 export function transpile(jsSource, opts) {
@@ -91,6 +115,7 @@ export function transpile(jsSource, opts) {
     inputFields = [],
     nestedStructs = [],
     resolveTag = () => null,
+    resolveGlobals = () => null,
   } = opts;
 
   const ast = parse(jsSource, { sourceType: "module" });
@@ -138,17 +163,52 @@ export function transpile(jsSource, opts) {
   function inferGoType(node) {
     if (t.isIdentifier(node)) {
       if (node.name === inputParamName) return structName;
+      // `$global` is typed by the project's generated Globals struct, which
+      // is a different package's type -- its FIELD types are what matter
+      // here, so it gets a sentinel that only the member branch consumes.
+      if (globalsBinding !== null && node.name === globalsBinding) return GLOBALS_TYPE;
       return lookupLocalType(node.name);
     }
-    if (t.isMemberExpression(node) && !node.computed && t.isIdentifier(node.property)) {
+    // OptionalMemberExpression (`input.head?.content`) reads identically:
+    // Go has no optional chaining, and the only place the compiler emits it
+    // is behind a nil test we've already translated (or inside a dropped
+    // resume-only call).
+    if (
+      (t.isMemberExpression(node) || t.isOptionalMemberExpression(node)) &&
+      !node.computed &&
+      t.isIdentifier(node.property)
+    ) {
       if (node.property.name === "length") return "int"; // len(...)
       const objType = inferGoType(node.object);
       if (!objType) return null;
       const fieldName = capitalize(node.property.name);
+      if (objType === GLOBALS_TYPE) {
+        return globalsEntry?.fieldTypes?.get(fieldName) ?? null;
+      }
       if (objType === structName) return inputFieldTypes.get(fieldName) ?? null;
-      return structFieldTypes.get(objType)?.get(fieldName) ?? null;
+      // A pointer field (an optional attr tag, FR11) is dereferenced with
+      // the same `.Field` syntax in Go, so the pointee's fields are what a
+      // member read resolves against.
+      const base = objType.startsWith("*") ? objType.slice(1) : objType;
+      return structFieldTypes.get(base)?.get(fieldName) ?? null;
     }
     return null;
+  }
+
+  /**
+   * Whether an expression is ALREADY a Go `string`, so passing it to a
+   * string-typed field needs no runtime.String coercion. Deliberately
+   * conservative: an unknown expression returns false and gets wrapped,
+   * which is always type-correct (runtime.String of a string is identity).
+   */
+  function isStringTyped(node) {
+    if (t.isStringLiteral(node)) return true;
+    // `a + b` over strings is a Go string; over anything else the binary
+    // translation wouldn't have compiled anyway.
+    if (t.isBinaryExpression(node) && node.operator === "+") {
+      return isStringTyped(node.left) && isStringTyped(node.right);
+    }
+    return inferGoType(node) === "string";
   }
 
   /** `[]T` -> `T`; anything else (including `[]any`) -> null. */
@@ -252,6 +312,26 @@ export function transpile(jsSource, opts) {
   // import block only lists what's used.
   const usedTags = new Set();
 
+  // FR10 state. `globalsBinding` is the local name the compiled JS gave the
+  // `_$global()` result (always `$global`, but read it rather than assume);
+  // `globalsEntry` is the resolved Globals type, looked up LAZILY on first
+  // use so a project without a global.d.ts still generates every template
+  // that doesn't read `$global`.
+  let globalsBinding = null;
+  let globalsEntry = null;
+  function useGlobals(node) {
+    if (globalsEntry) return globalsEntry;
+    const entry = resolveGlobals();
+    if (!entry) {
+      throw new UnsupportedError(
+        "`$global` is used but the project declares no request context -- add a `global.d.ts` with `declare global { namespace Marko { interface Global { /* fields */ } } }` under the generate root, and marko-go will generate the Globals struct next to it",
+        node,
+      );
+    }
+    globalsEntry = entry;
+    return entry;
+  }
+
   // 2. Module-level `static const` declarations. In compiled JS these are
   //    plain top-level `const`s hoisted above the template. They become
   //    package-level Go vars; every generated file in a directory shares one
@@ -310,11 +390,16 @@ export function transpile(jsSource, opts) {
   function translateExpr(node) {
     if (t.isIdentifier(node)) {
       if (node.name === inputParamName) return "input";
+      if (globalsBinding !== null && node.name === globalsBinding) return GLOBALS_VAR;
       if (node.name === "undefined") return "nil";
       const modConst = moduleConsts.get(node.name);
       return modConst ?? node.name;
     }
-    if (t.isMemberExpression(node)) {
+    // Optional chaining (`input.head?.content`) translates as a PLAIN member
+    // access: Go has no `?.`, and the compiler only emits it where the value
+    // is already guarded (inside an `if (input.head)` branch) or inside a
+    // resume-only call that gets dropped whole.
+    if (t.isMemberExpression(node) || t.isOptionalMemberExpression(node)) {
       if (node.computed) {
         // `variants[key]` -- a Go map/slice index. Identical syntax.
         return `${translateExpr(node.object)}[${translateExpr(node.property)}]`;
@@ -600,7 +685,7 @@ export function transpile(jsSource, opts) {
     // Go doesn't coerce int/string/nil to bool in an if-condition the way
     // JS does, so every test goes through runtime.Truthy. It's a no-op
     // for expressions that are already real Go bools (comparisons, `!x`).
-    const test = `runtime.Truthy(${translateExpr(node.test)})`;
+    const test = translateTest(node.test);
     const consequent = translateBlockStatements(
       t.isBlockStatement(node.consequent) ? node.consequent.body : [node.consequent],
     );
@@ -616,6 +701,23 @@ export function transpile(jsSource, opts) {
       }
     }
     return out;
+  }
+
+  /**
+   * An `if` condition. Normally runtime.Truthy (JS coercion over `any`), but
+   * a POINTER-typed test becomes a native `x != nil` -- that's the
+   * `<if=input.head>` guard on an optional attr tag (FR11), where nil means
+   * "section not passed".
+   *
+   * runtime.Truthy handles a nil pointer correctly too (it reflects on
+   * nil-ness precisely so untyped cases work), so this is readability plus
+   * defense in depth rather than the only thing keeping the answer right.
+   */
+  function translateTest(node) {
+    const type = inferGoType(node);
+    const go = translateExpr(node);
+    if (type && type.startsWith("*")) return `${go} != nil`;
+    return `runtime.Truthy(${go})`;
   }
 
   // 8. `_content(id, renderer, parentScopeId)` / `_content_resume(...)`
@@ -671,6 +773,8 @@ export function transpile(jsSource, opts) {
         let value;
         if (isContentCall(prop.value)) {
           value = translateContent(prop.value);
+        } else if (calleeIs(prop.value, "attrTag")) {
+          value = translateAttrTag(prop.value, entry, key, goField, declaredType);
         } else if (declaredType === "map[string]any" && t.isObjectExpression(prop.value)) {
           // `attrs={...}` -- the callee declares map[string]any, so force
           // that even when every value happens to be a string.
@@ -680,6 +784,14 @@ export function transpile(jsSource, opts) {
           );
         } else {
           value = translateExpr(prop.value);
+          // JS `&&`/`||` in value position return an OPERAND, so they
+          // translate to runtime.And/OrValue, which are `any`-typed. A field
+          // the callee declares as `string` (e.g. `class?: string` fed by
+          // `class=(cond && "active")`) needs that narrowed -- the call site
+          // is the only place that knows the target type.
+          if (declaredType === "string" && !isStringTyped(prop.value)) {
+            value = `runtime.String(${value})`;
+          }
         }
         fields.push(`${goField}: ${value},`);
       }
@@ -695,6 +807,66 @@ export function transpile(jsSource, opts) {
     ].join("\n");
   }
 
+  /**
+   * FR11, caller side. `<@head>…</@head>` on a tag compiles to
+   *
+   *   head: _attrTag({ content: _content_resume("id", () => {…}, scope) })
+   *
+   * and becomes a pointer to the callee's generated section struct:
+   *
+   *   Head: &layouts.PageLayoutInputHead{Content: func(w *runtime.Writer){…}}
+   *
+   * The POINTER is what makes the callee's `if (input.head)` test work: nil
+   * is "section not passed". The struct name comes from the callee's
+   * declared field type (`*PageLayoutInputHead`), never from guessing --
+   * that keeps caller and callee in agreement by construction.
+   */
+  function translateAttrTag(node, entry, key, goField, declaredType) {
+    if (!declaredType || !declaredType.startsWith("*")) {
+      throw new UnsupportedError(
+        `<@${key}> is passed to <${entry.pascalName}> but that template declares \`${key}\`${
+          declaredType ? ` as ${declaredType}` : " nowhere"
+        } -- declare it as \`${key}?: Marko.AttrTag<{ content: Marko.Body }>\` in its \`interface Input\``,
+        node,
+      );
+    }
+    const [argObj] = node.arguments;
+    if (!t.isObjectExpression(argObj)) {
+      throw new UnsupportedError("unsupported attr tag payload", node);
+    }
+    const qualifier = entry.sameDir ? "" : `${entry.alias}.`;
+    // `declaredType` is `*PageLayoutInputHead` as written in the CALLEE's
+    // package; qualify it for this file and drop the `*` (we take the
+    // address of a composite literal instead).
+    const structName = qualifier + declaredType.slice(1);
+    const fields = [];
+    for (const prop of argObj.properties) {
+      if (!t.isObjectProperty(prop) || prop.computed) {
+        throw new UnsupportedError("unsupported property in an attr tag", prop);
+      }
+      const propKey = t.isIdentifier(prop.key)
+        ? prop.key.name
+        : t.isStringLiteral(prop.key)
+          ? prop.key.value
+          : null;
+      if (propKey !== "content") {
+        throw new UnsupportedError(
+          `attr tag <@${key}> carries \`${propKey}\`, but only body content is supported so far -- attr-tag attributes are not part of the ported subset yet`,
+          prop,
+        );
+      }
+      if (!isContentCall(prop.value)) {
+        throw new UnsupportedError(
+          `attr tag <@${key}> must carry body content`,
+          prop.value,
+        );
+      }
+      fields.push(`Content: ${translateContent(prop.value)},`);
+    }
+    if (fields.length === 0) return `&${structName}{}`;
+    return [`&${structName}{`, indent(fields), `}`].join("\n");
+  }
+
   // 10. `_dynamic_tag(scopeId, accessor, contentExpr, {}, 0, 0, guard)`
   //     renders `<${input.content}/>` -- a body passed in by the caller.
   //     In the ported subset the only supported shape is a direct
@@ -702,26 +874,46 @@ export function transpile(jsSource, opts) {
   //     component reference) has no Go analogue.
   function translateDynamicTag(node) {
     const contentExpr = node.arguments[2];
-    if (
-      !t.isMemberExpression(contentExpr) ||
-      contentExpr.computed ||
-      !t.isIdentifier(contentExpr.object) ||
-      contentExpr.object.name !== inputParamName
-    ) {
+    // Two supported shapes, both resolving to a runtime.Body reachable from
+    // `input`: the template's own body (`<${input.content}/>`) and an attr
+    // tag's body (`<${input.head.content}/>`, FR11). Anything else -- a
+    // dynamic component reference -- has no Go analogue.
+    const declared = isMemberChainFromInput(contentExpr)
+      ? inferGoType(contentExpr)
+      : undefined;
+    if (declared === undefined) {
       throw new UnsupportedError(
         "dynamic tags are only supported for a body passed as input (e.g. `<${input.content}/>`)",
         contentExpr ?? node,
       );
     }
-    const field = capitalize(contentExpr.property.name);
-    const declared = inputFieldTypes.get(field);
-    if (declared && declared !== "runtime.Body" && declared !== "any") {
+    if (declared !== null && declared !== "runtime.Body" && declared !== "any") {
       throw new UnsupportedError(
-        `\`input.${contentExpr.property.name}\` is rendered as a body but declared as ${declared} -- declare it as Marko.Body`,
+        `\`${sourceMemberPath(contentExpr)}\` is rendered as a body but declared as ${declared} -- declare it as Marko.Body`,
         contentExpr,
       );
     }
-    return `if input.${field} != nil {\n\tinput.${field}(w)\n}`;
+    const ref = translateExpr(contentExpr);
+    return `if ${ref} != nil {\n\t${ref}(w)\n}`;
+  }
+
+  /** `input.content` / `input.head.content` -- a dotted chain rooted at input. */
+  function isMemberChainFromInput(node) {
+    let cur = node;
+    while (
+      (t.isMemberExpression(cur) || t.isOptionalMemberExpression(cur)) &&
+      !cur.computed &&
+      t.isIdentifier(cur.property)
+    ) {
+      cur = cur.object;
+    }
+    return t.isIdentifier(cur) && cur.name === inputParamName;
+  }
+
+  /** Renders a member chain back as JS source, for error messages. */
+  function sourceMemberPath(node) {
+    if (t.isIdentifier(node)) return node.name;
+    return `${sourceMemberPath(node.object)}.${node.property.name}`;
   }
 
   // 11. Statement-level translator, used for the renderer body and every
@@ -737,6 +929,21 @@ export function transpile(jsSource, opts) {
         // RESUME_ONLY, so on a server-only fresh mount the whole set is dead.
         // Dropped for the same reason as the resume-only calls above.
         if (decl.init && t.isNewExpression(decl.init)) continue;
+        // FR10: `const $global = _$global();` binds the request context.
+        // Go gets it off the Writer with a COMMA-OK assertion, so a render
+        // with no globals set (a bare `pages.Landing(w, input)`) yields the
+        // zero value instead of panicking -- that's the documented contract
+        // on runtime.Writer.SetGlobals.
+        if (decl.init && calleeIs(decl.init, "$global")) {
+          if (!t.isIdentifier(decl.id)) {
+            throw new UnsupportedError("unexpected $global binding form", decl);
+          }
+          const entry = useGlobals(decl);
+          globalsBinding = decl.id.name;
+          const qualifier = entry.sameDir ? "" : `${entry.alias}.`;
+          lines.push(`${GLOBALS_VAR}, _ := w.Globals().(${qualifier}${GLOBALS_TYPE})`);
+          continue;
+        }
         if (!t.isIdentifier(decl.id)) {
           throw new UnsupportedError("destructuring assignment is not supported yet", node);
         }
@@ -821,6 +1028,17 @@ export function transpile(jsSource, opts) {
   //     per cross-directory tag dependency actually used.
   const importLines = ['"github.com/svallory/go-marko/runtime"'];
   const seenPaths = new Set();
+  // The globals package, when this template reads `$global` and the Globals
+  // struct lives in another package. Same alias table as tag imports, so a
+  // collision was already resolved when the alias was handed out.
+  if (globalsEntry && !globalsEntry.sameDir) {
+    seenPaths.add(globalsEntry.goImportPath);
+    importLines.push(
+      globalsEntry.alias !== globalsEntry.pkgName
+        ? `${globalsEntry.alias} "${globalsEntry.goImportPath}"`
+        : `"${globalsEntry.goImportPath}"`,
+    );
+  }
   for (const entry of [...usedTags].sort((a, b) =>
     a.goImportPath.localeCompare(b.goImportPath),
   )) {

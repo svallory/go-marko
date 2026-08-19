@@ -288,3 +288,73 @@ describe("nested Input structs (FR3)", () => {
     );
   });
 });
+
+/**
+ * FR11 -- `head?: Marko.AttrTag<{ content: Marko.Body }>`, a named section.
+ *
+ * The generated field is a POINTER: the compiled JS tests `if (input.head)`,
+ * and nil is the only Go value that distinguishes "section not passed" from
+ * "section passed but empty".
+ */
+describe("attr tags (FR11)", () => {
+  function parseNested(body, owner = "PageLayoutInput") {
+    const fields = parseInputInterface(
+      `export interface Input {${body}}\n<div/>`,
+      "<test>",
+      owner,
+    );
+    return [fields, fields.nested];
+  }
+
+  test("maps to a pointer field plus a nested struct holding Content", () => {
+    const [fields, nested] = parseNested(
+      " head?: Marko.AttrTag<{ content: Marko.Body }>;",
+    );
+    expect(fields.map((f) => [f.name, f.goType, f.optional])).toEqual([
+      ["Head", "*PageLayoutInputHead", true],
+    ]);
+    expect(nested).toEqual([
+      {
+        name: "PageLayoutInputHead",
+        fields: [
+          { jsName: "content", name: "Content", goType: "runtime.Body", optional: false },
+        ],
+      },
+    ]);
+  });
+
+  test("the section struct follows the same outer+field naming as any nested struct", () => {
+    const [fields] = parseNested(" footer?: Marko.AttrTag<{ content: Marko.Body }>;");
+    expect(fields[0].goType).toBe("*PageLayoutInputFooter");
+  });
+
+  test("an attr tag alongside ordinary fields leaves them untouched", () => {
+    const [fields] = parseNested(
+      " title?: string; head?: Marko.AttrTag<{ content: Marko.Body }>; content: Marko.Body;",
+    );
+    expect(fields.map((f) => [f.name, f.goType])).toEqual([
+      ["Title", "string"],
+      ["Head", "*PageLayoutInputHead"],
+      ["Content", "runtime.Body"],
+    ]);
+  });
+
+  test("extra attr-tag members beyond content are rejected, not silently dropped", () => {
+    // Attr-tag ATTRIBUTES have no Go shape decided yet (FR11 scopes to body
+    // content only), so they must fail loudly rather than generate a struct
+    // the transpiler can't fill in.
+    expect(() =>
+      parseNested(" head?: Marko.AttrTag<{ title: string; content: Marko.Body }>;"),
+    ).toThrow(/content/);
+  });
+
+  test("a REPEATED attr tag is rejected -- no iteration support yet", () => {
+    expect(() =>
+      parseNested(" tab?: Marko.AttrTag<{ content: Marko.Body }>[];"),
+    ).toThrow(/AttrTag/);
+  });
+
+  test("a bare Marko.AttrTag with no type argument is rejected", () => {
+    expect(() => parseNested(" head?: Marko.AttrTag;")).toThrow(/Marko\.AttrTag/);
+  });
+});
