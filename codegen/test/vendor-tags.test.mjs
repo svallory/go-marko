@@ -132,7 +132,7 @@ describe("unscoped npm tag package", () => {
       },
     });
 
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     const files = byRel(results, root);
 
     expect([...files.keys()].sort()).toEqual(
@@ -172,7 +172,7 @@ describe("unscoped npm tag package", () => {
       },
     });
 
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     const files = byRel(results, root);
 
     expect(files.has("marko_modules/fancy_tags/fancy-icon.marko.go")).toBe(true);
@@ -209,7 +209,7 @@ describe("unscoped npm tag package", () => {
       },
     });
 
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     const files = byRel(results, root);
     const a = files.get("marko_modules/fancy_tags/thing.marko.go");
 
@@ -240,7 +240,7 @@ describe("scoped npm tag package", () => {
       },
     });
 
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     const files = byRel(results, root);
 
     expect(files.has("marko_modules/acme_ui_kit/ui-chip.marko.go")).toBe(true);
@@ -286,7 +286,7 @@ describe("both a scoped and an unscoped package used together", () => {
       },
     });
 
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     const files = byRel(results, root);
 
     expect([...files.keys()].sort()).toEqual(
@@ -352,7 +352,7 @@ describe("sanitization edge cases end to end", () => {
       },
     });
 
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     const files = byRel(results, root);
     const rel = [...files.keys()].find((k) => k.startsWith("marko_modules/"));
     expect(rel).toBe("marko_modules/pkg123_tags/weird-tag.marko.go");
@@ -379,7 +379,7 @@ describe("project templates and node_modules stay separate", () => {
       },
     });
 
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     expect(fs.existsSync(path.join(root, "marko_modules"))).toBe(false);
     expect(results).toHaveLength(2);
   });

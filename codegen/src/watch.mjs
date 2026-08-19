@@ -101,22 +101,25 @@ function killGroup(child, signal) {
  */
 async function regenerate(dir, { log = console.log, logError = console.error } = {}) {
   const root = path.resolve(dir);
-  const { results, errors } = await generateProject(root, { bestEffort: true });
+  const { goFiles, jsAssets, diagnostics } = await generateProject(root, {
+    bestEffort: true,
+  });
+  const written = [...goFiles, ...jsAssets];
 
-  for (const r of results) log(fileLine(root, r.outPath));
+  for (const r of written) log(fileLine(root, r.outPath));
 
-  if (errors.length) {
-    for (const { markoPath, error } of errors) {
+  if (diagnostics.length) {
+    for (const { markoPath, error } of diagnostics) {
       logError(`marko-go: ${path.relative(root, markoPath)}: ${error.message}`);
     }
     logError(
-      `marko-go: ${errors.length} template${errors.length === 1 ? "" : "s"} failed; keeping previous output`,
+      `marko-go: ${diagnostics.length} template${diagnostics.length === 1 ? "" : "s"} failed; keeping previous output`,
     );
     return false;
   }
 
   log(
-    `marko-go: generated ${results.length} file${results.length === 1 ? "" : "s"} from ${root}`,
+    `marko-go: generated ${written.length} file${written.length === 1 ? "" : "s"} from ${root}`,
   );
   return true;
 }

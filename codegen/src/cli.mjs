@@ -136,23 +136,28 @@ export function parseArgs(argv) {
  */
 async function generateOnce(dir) {
   const root = path.resolve(dir);
-  const { results, errors } = await generateProject(dir, { bestEffort: true });
-  for (const r of results) {
+  const { goFiles, jsAssets, diagnostics } = await generateProject(dir, {
+    bestEffort: true,
+  });
+  // Both output channels print the same way; jsAssets is empty until the
+  // resumability wave starts emitting client bundles (see project.mjs).
+  const written = [...goFiles, ...jsAssets];
+  for (const r of written) {
     console.log(`  ${path.relative(root, r.outPath)}`);
   }
-  if (errors.length) {
-    for (const { markoPath, error } of errors) {
+  if (diagnostics.length) {
+    for (const { markoPath, error } of diagnostics) {
       console.error(`marko-go: ${path.relative(root, markoPath)}: ${error.message}`);
     }
     console.error(
-      `marko-go: ${errors.length} of ${results.length + errors.length} template${
-        results.length + errors.length === 1 ? "" : "s"
+      `marko-go: ${diagnostics.length} of ${goFiles.length + diagnostics.length} template${
+        goFiles.length + diagnostics.length === 1 ? "" : "s"
       } failed`,
     );
     return 1;
   }
   console.log(
-    `marko-go: generated ${results.length} file${results.length === 1 ? "" : "s"} from ${root}`,
+    `marko-go: generated ${written.length} file${written.length === 1 ? "" : "s"} from ${root}`,
   );
   return 0;
 }

@@ -37,8 +37,8 @@ beforeAll(async () => {
   fs.writeFileSync(path.join(root, "go.mod"), "module myapp\n\ngo 1.24\n");
   uiDir = path.join(root, "ui");
 
-  const results = await generateProject(uiDir);
-  files = new Map(results.map((r) => [path.relative(uiDir, r.outPath), r.code]));
+  const { goFiles } = await generateProject(uiDir);
+  files = new Map(goFiles.map((r) => [path.relative(uiDir, r.outPath), r.code]));
 });
 
 afterAll(() => {
@@ -190,7 +190,7 @@ describe("generate over the quickstart fixture", () => {
   });
 
   test("generating twice is byte-identical (deterministic output)", async () => {
-    const again = await generateProject(uiDir, { write: false });
+    const { goFiles: again } = await generateProject(uiDir, { write: false });
     for (const r of again) {
       expect(r.code).toBe(files.get(path.relative(uiDir, r.outPath)));
     }

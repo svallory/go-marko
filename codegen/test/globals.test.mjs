@@ -136,7 +136,7 @@ describe("generateProject with globals", () => {
       "global.d.ts": GLOBAL_DTS,
       "hello.marko": "<div>hi</div>\n",
     });
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     const rels = results.map((r) => path.relative(ui, r.outPath)).sort();
     expect(rels).toEqual(["globals.marko.go", "hello.marko.go"]);
     expect(fs.readFileSync(path.join(ui, "globals.marko.go"), "utf8")).toContain(
@@ -152,7 +152,7 @@ describe("generateProject with globals", () => {
       // ternary, which is a separate (pre-existing) unsupported shape.
       "pages/home.marko": "<p>${$global.path}</p>\n",
     });
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     const code = results.find((r) => r.outPath.endsWith("home.marko.go")).code;
     expect(code).toContain(`\t"myapp/ui"\n`);
     expect(code).toContain("markoGlobal, _ := w.Globals().(ui.Globals)");
@@ -164,7 +164,7 @@ describe("generateProject with globals", () => {
       "global.d.ts": GLOBAL_DTS,
       "home.marko": "<p>${$global.path}</p>\n",
     });
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     const code = results.find((r) => r.outPath.endsWith("home.marko.go")).code;
     expect(code).toContain("markoGlobal, _ := w.Globals().(Globals)");
     expect(code).not.toContain(`"myapp/ui"`);
@@ -172,7 +172,7 @@ describe("generateProject with globals", () => {
 
   test("no .d.ts means no globals file at all", async () => {
     const { ui } = fixture({ "hello.marko": "<div>hi</div>\n" });
-    const results = await generateProject(ui);
+    const { goFiles: results } = await generateProject(ui);
     expect(results.map((r) => path.relative(ui, r.outPath))).toEqual([
       "hello.marko.go",
     ]);
@@ -183,7 +183,7 @@ describe("generateProject with globals", () => {
     const { ui } = fixture({
       "home.marko": "<p>${$global.path}</p>\n",
     });
-    const { errors } = await generateProject(ui, { bestEffort: true });
+    const { diagnostics: errors } = await generateProject(ui, { bestEffort: true });
     expect(errors).toHaveLength(1);
     expect(errors[0].error.message).toMatch(/global\.d\.ts/);
   });

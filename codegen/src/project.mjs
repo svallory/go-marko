@@ -218,13 +218,42 @@ export function addVendorTemplate(
  * aren't attributable to one template (a missing go.mod, a bad root) still
  * throw either way.
  *
+ * ## Result shape
+ *
+ * Generation has more than one OUTPUT CHANNEL. Today only one carries data,
+ * but the shape names all of them so adding a producer never changes any
+ * consumer's contract:
+ *
+ * ```
+ * GenerateResult = {
+ *   goFiles:     GoFile[],      // Go source written next to each .marko
+ *   jsAssets:    JsAsset[],     // client bundles + manifests (empty today)
+ *   diagnostics: Diagnostic[],  // per-template failures, when bestEffort
+ * }
+ *
+ * GoFile     = { markoPath: string, outPath: string, code: string }
+ * JsAsset    = { kind: string, outPath: string, code: string,
+ *                markoPath?: string }
+ * Diagnostic = { severity: "error", markoPath: string, error: Error }
+ * ```
+ *
+ * `jsAssets` is the FR12 wave-2 channel: compiling templates in `dom` mode
+ * produces client bundles plus an accessor-map/registry-id manifest that the
+ * Go generator consumes (see notes/fr12-resume-findings.md §5, §7). It is
+ * always present and always an array, so a consumer written today
+ * (`for (const a of jsAssets)`) needs no change when it starts filling up.
+ *
+ * `diagnostics` is only non-empty under `bestEffort`; without it the first
+ * failure still throws. `severity` is fixed at "error" for now -- the field
+ * exists so warnings can be added without another shape change.
+ *
  * @param {string} root directory to walk
  * @param {{write?: boolean, bestEffort?: boolean}} [opts] when write is
  *   false, nothing touches disk; when bestEffort is true, per-file errors are
- *   collected instead of thrown
- * @returns {Promise<{markoPath: string, outPath: string, code: string}[]> |
- *   Promise<{results: {markoPath: string, outPath: string, code: string}[],
- *            errors: {markoPath: string, error: Error}[]}>}
+ *   collected as diagnostics instead of thrown
+ * @returns {Promise<{goFiles: {markoPath: string, outPath: string, code: string}[],
+ *                    jsAssets: {kind: string, outPath: string, code: string}[],
+ *                    diagnostics: {severity: string, markoPath: string, error: Error}[]}>}
  */
 export async function generateProject(root, { write = true, bestEffort = false } = {}) {
   const abs = path.resolve(root);
@@ -233,8 +262,10 @@ export async function generateProject(root, { write = true, bestEffort = false }
   }
   const mod = findGoModule(abs);
   const registry = buildRegistry(abs, mod);
-  const results = [];
-  const errors = [];
+  const goFiles = [];
+  /** FR12 wave 2 writes client bundles + manifests here. Empty today. */
+  const jsAssets = [];
+  const diagnostics = [];
 
   // FR10: the project's `Marko.Global` declaration, if it has one. Found
   // once for the whole run (it is a project-wide singleton) and handed to
@@ -248,7 +279,7 @@ export async function generateProject(root, { write = true, bestEffort = false }
       fs.mkdirSync(path.dirname(globals.outPath), { recursive: true });
       fs.writeFileSync(globals.outPath, code);
     }
-    results.push({ markoPath: globals.dtsPath, outPath: globals.outPath, code });
+    goFiles.push({ markoPath: globals.dtsPath, outPath: globals.outPath, code });
   }
 
   // Vendor (node_modules) templates are discovered lazily, while resolving
@@ -260,14 +291,14 @@ export async function generateProject(root, { write = true, bestEffort = false }
   // internal imports "just work" with one flat loop.
   for (const entry of registry.values()) {
     try {
-      results.push(await generateOne(entry, registry));
+      goFiles.push(await generateOne(entry, registry));
     } catch (err) {
       if (!bestEffort) throw err;
-      errors.push({ markoPath: entry.markoPath, error: err });
+      diagnostics.push({ severity: "error", markoPath: entry.markoPath, error: err });
     }
   }
 
-  return bestEffort ? { results, errors } : results;
+  return { goFiles, jsAssets, diagnostics };
 
   async function generateOne(entry, registry) {
     const js = await compileMarko(entry.markoPath);

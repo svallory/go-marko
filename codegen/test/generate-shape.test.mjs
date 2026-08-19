@@ -6,15 +6,29 @@ import { generateProject } from "../src/project.mjs";
 import { UnsupportedError } from "../src/errors.mjs";
 
 /**
- * Regression guard on the SHAPE of what generateProject returns.
+ * Regression guard on the SHAPE of what generateProject returns:
+ * `{goFiles, jsAssets, diagnostics}` (see project.mjs's "Result shape").
  *
- * cli.mjs prints `path.relative(root, r.outPath)` for every result, so a
- * result entry that is undefined -- or one missing outPath -- crashes the
- * summary printer even though the .marko.go on disk is perfectly fine. That
- * failure mode is easy to reintroduce whenever the generate loop is
- * refactored, and a single-template directory is where it hides (one entry,
- * no neighbour to make the mistake obvious).
+ * cli.mjs prints `path.relative(root, r.outPath)` for every emitted file, so
+ * an entry that is undefined -- or one missing outPath -- crashes the summary
+ * printer even though the .marko.go on disk is perfectly fine. That failure
+ * mode is easy to reintroduce whenever the generate loop is refactored, and a
+ * single-template directory is where it hides (one entry, no neighbour to make
+ * the mistake obvious).
+ *
+ * The three channels are asserted to be PRESENT and array-typed on every
+ * return path, including the error paths, because that invariant is what lets
+ * consumers destructure unconditionally. `jsAssets` is empty until the
+ * resumability wave starts emitting client bundles; the tests below pin it
+ * empty-but-present so filling it becomes a deliberate, visible change.
  */
+
+/** Every generateProject return must carry all three channels as arrays. */
+function expectChannels(out) {
+  expect(Array.isArray(out.goFiles)).toBe(true);
+  expect(Array.isArray(out.jsAssets)).toBe(true);
+  expect(Array.isArray(out.diagnostics)).toBe(true);
+}
 
 const dirs = [];
 
@@ -39,22 +53,31 @@ afterEach(() => {
 const HELLO = `<div>hello</div>\n`;
 
 describe("generateProject result shape", () => {
-  test("a single-template directory returns one fully-populated entry", async () => {
+  test("a single-template directory returns one fully-populated goFile", async () => {
     const { ui } = fixture({ "hello.marko": HELLO });
-    const results = await generateProject(ui);
+    const out = await generateProject(ui);
+    expectChannels(out);
 
-    expect(results).toHaveLength(1);
-    for (const r of results) {
+    expect(out.goFiles).toHaveLength(1);
+    for (const r of out.goFiles) {
       expect(r).toBeDefined();
       expect(typeof r.outPath).toBe("string");
       expect(typeof r.markoPath).toBe("string");
       expect(typeof r.code).toBe("string");
     }
-    // The exact operation cli.mjs performs on every entry.
-    expect(results.map((r) => path.relative(ui, r.outPath))).toEqual([
+    // The exact operation cli.mjs performs on every emitted file.
+    expect(out.goFiles.map((r) => path.relative(ui, r.outPath))).toEqual([
       "hello.marko.go",
     ]);
     expect(fs.existsSync(path.join(ui, "hello.marko.go"))).toBe(true);
+  });
+
+  test("the jsAssets channel exists and is empty until resumability fills it", async () => {
+    const { ui } = fixture({ "hello.marko": HELLO });
+    const out = await generateProject(ui);
+    expectChannels(out);
+    expect(out.jsAssets).toEqual([]);
+    expect(out.diagnostics).toEqual([]);
   });
 
   test("every entry is populated for a multi-template directory too", async () => {
@@ -62,11 +85,11 @@ describe("generateProject result shape", () => {
       "hello.marko": HELLO,
       "nested/bye.marko": `<div>bye</div>\n`,
     });
-    const results = await generateProject(ui);
+    const { goFiles } = await generateProject(ui);
 
-    expect(results).toHaveLength(2);
-    expect(results.some((r) => r === undefined)).toBe(false);
-    expect(results.map((r) => path.relative(ui, r.outPath)).sort()).toEqual([
+    expect(goFiles).toHaveLength(2);
+    expect(goFiles.some((r) => r === undefined)).toBe(false);
+    expect(goFiles.map((r) => path.relative(ui, r.outPath)).sort()).toEqual([
       "hello.marko.go",
       "nested/bye.marko.go",
     ]);
@@ -74,11 +97,12 @@ describe("generateProject result shape", () => {
 
   test("write:false still returns populated entries and touches no disk", async () => {
     const { ui } = fixture({ "hello.marko": HELLO });
-    const results = await generateProject(ui, { write: false });
+    const out = await generateProject(ui, { write: false });
+    expectChannels(out);
 
-    expect(results).toHaveLength(1);
-    expect(results[0].outPath).toBe(path.join(ui, "hello.marko.go"));
-    expect(results[0].code).toContain("package ui");
+    expect(out.goFiles).toHaveLength(1);
+    expect(out.goFiles[0].outPath).toBe(path.join(ui, "hello.marko.go"));
+    expect(out.goFiles[0].code).toContain("package ui");
     expect(fs.existsSync(path.join(ui, "hello.marko.go"))).toBe(false);
   });
 });
@@ -86,16 +110,18 @@ describe("generateProject result shape", () => {
 describe("bestEffort (watch mode)", () => {
   const BROKEN = `<div>\n  \${broken(\n</div>\n`;
 
-  test("collects per-file errors instead of throwing, and keeps the good files", async () => {
+  test("collects per-file diagnostics instead of throwing, and keeps the good files", async () => {
     const { ui } = fixture({ "ok.marko": HELLO, "bad.marko": BROKEN });
-    const { results, errors } = await generateProject(ui, { bestEffort: true });
+    const out = await generateProject(ui, { bestEffort: true });
+    expectChannels(out);
 
-    expect(errors).toHaveLength(1);
-    expect(errors[0].markoPath).toBe(path.join(ui, "bad.marko"));
-    expect(errors[0].error).toBeInstanceOf(Error);
+    expect(out.diagnostics).toHaveLength(1);
+    expect(out.diagnostics[0].severity).toBe("error");
+    expect(out.diagnostics[0].markoPath).toBe(path.join(ui, "bad.marko"));
+    expect(out.diagnostics[0].error).toBeInstanceOf(Error);
 
-    expect(results).toHaveLength(1);
-    expect(results[0].outPath).toBe(path.join(ui, "ok.marko.go"));
+    expect(out.goFiles).toHaveLength(1);
+    expect(out.goFiles[0].outPath).toBe(path.join(ui, "ok.marko.go"));
     expect(fs.existsSync(path.join(ui, "ok.marko.go"))).toBe(true);
   });
 
@@ -105,10 +131,11 @@ describe("bestEffort (watch mode)", () => {
     const good = fs.readFileSync(path.join(ui, "hello.marko.go"), "utf8");
 
     fs.writeFileSync(path.join(ui, "hello.marko"), BROKEN);
-    const { results, errors } = await generateProject(ui, { bestEffort: true });
+    const out = await generateProject(ui, { bestEffort: true });
+    expectChannels(out);
 
-    expect(results).toHaveLength(0);
-    expect(errors).toHaveLength(1);
+    expect(out.goFiles).toHaveLength(0);
+    expect(out.diagnostics).toHaveLength(1);
     expect(fs.readFileSync(path.join(ui, "hello.marko.go"), "utf8")).toBe(good);
   });
 
