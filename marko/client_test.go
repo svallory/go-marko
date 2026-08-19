@@ -61,3 +61,85 @@ func TestClientAssets(t *testing.T) {
 		}
 	})
 }
+
+func TestMountClientAssets(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "page.js"), []byte("export{};"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "secret.txt"), []byte("nope"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	mux := http.NewServeMux()
+	MountClientAssets(mux, dir)
+
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", path, nil))
+		return rec
+	}
+
+	t.Run("serves a bundle at the default prefix with no StripPrefix wiring", func(t *testing.T) {
+		rec := get("/.marko-go/client/page.js")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if rec.Body.String() != "export{};" {
+			t.Fatalf("body = %q", rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "text/javascript; charset=utf-8" {
+			t.Fatalf("Content-Type = %q", ct)
+		}
+	})
+
+	t.Run("still refuses non-.js files and directory listings", func(t *testing.T) {
+		for _, p := range []string{
+			"/.marko-go/client/secret.txt",
+			"/.marko-go/client/",
+			"/.marko-go/client/missing.js",
+		} {
+			if rec := get(p); rec.Code != http.StatusNotFound {
+				t.Errorf("GET %s status = %d, want 404", p, rec.Code)
+			}
+		}
+	})
+}
+
+func TestMountClientAssetsAt(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "page.js"), []byte("export{};"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("custom prefix without trailing slash is corrected", func(t *testing.T) {
+		mux := http.NewServeMux()
+		MountClientAssetsAt(mux, "/assets/js", dir)
+
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/assets/js/page.js", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+		if rec.Body.String() != "export{};" {
+			t.Fatalf("body = %q", rec.Body.String())
+		}
+	})
+
+	t.Run("custom prefix with trailing slash works as-is", func(t *testing.T) {
+		mux := http.NewServeMux()
+		MountClientAssetsAt(mux, "/assets/js/", dir)
+
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/assets/js/page.js", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200", rec.Code)
+		}
+	})
+
+	t.Run("DefaultClientURLPrefix is the documented convention", func(t *testing.T) {
+		if DefaultClientURLPrefix != "/.marko-go/client/" {
+			t.Fatalf("DefaultClientURLPrefix = %q", DefaultClientURLPrefix)
+		}
+	})
+}
