@@ -1,3 +1,3 @@
-module github.com/svallory/marko-go
+module github.com/svallory/go-marko
 
 go 1.22
