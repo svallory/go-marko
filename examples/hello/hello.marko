@@ -1,0 +1,10 @@
+<div>
+  <h1>Hello ${input.name}!</h1>
+  <if=input.items.length>
+    <ul>
+      <for|item| of=input.items>
+        <li>${item}</li>
+      </for>
+    </ul>
+  </if>
+</div>
