@@ -14,7 +14,10 @@ type ModuleConstInput struct {
 
 // ModuleConst renders the module-const.marko template into w.
 func ModuleConst(w *runtime.Writer, input ModuleConstInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<button")
 	w.HTML(runtime.AttrClass(moduleConstVariants[input.Variant]))
 	w.HTML(">Click</button>")
+	w.EndTemplate("module-const.marko")
 }

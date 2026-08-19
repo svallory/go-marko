@@ -14,9 +14,12 @@ type NestedInputInputUser struct {
 
 // NestedInput renders the nested-input.marko template into w.
 func NestedInput(w *runtime.Writer, input NestedInputInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<div>")
 	w.HTML(runtime.Escape(input.User.Name))
 	w.HTML(" is ")
 	w.HTML(runtime.Escape(input.User.Age))
 	w.HTML(" years old.</div>")
+	w.EndTemplate("nested-input.marko")
 }

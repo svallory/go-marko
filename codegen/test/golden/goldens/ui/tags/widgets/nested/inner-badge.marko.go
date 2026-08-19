@@ -9,7 +9,10 @@ type InnerBadgeInput struct {
 
 // InnerBadge renders the inner-badge.marko template into w.
 func InnerBadge(w *runtime.Writer, input InnerBadgeInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<span class=inner-badge>")
 	w.HTML(runtime.Escape(input.Text))
 	w.HTML("</span>")
+	w.EndTemplate("inner-badge.marko")
 }

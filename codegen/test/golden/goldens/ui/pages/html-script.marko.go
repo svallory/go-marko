@@ -7,6 +7,9 @@ type HtmlScriptInput struct{}
 
 // HtmlScript renders the html-script.marko template into w.
 func HtmlScript(w *runtime.Writer, input HtmlScriptInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<div><script")
 	w.HTML(" src=/assets/js/app.js defer></script></div>")
+	w.EndTemplate("html-script.marko")
 }

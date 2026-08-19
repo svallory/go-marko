@@ -10,9 +10,12 @@ type CrossDirInput struct{}
 
 // CrossDir renders the cross-dir.marko template into w.
 func CrossDir(w *runtime.Writer, input CrossDirInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<div>")
 	nested.InnerBadge(w, nested.InnerBadgeInput{
 		Text: "deep",
 	})
 	w.HTML("</div>")
+	w.EndTemplate("cross-dir.marko")
 }

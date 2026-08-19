@@ -9,7 +9,10 @@ type NullishFallbackInput struct {
 
 // NullishFallback renders the nullish-fallback.marko template into w.
 func NullishFallback(w *runtime.Writer, input NullishFallbackInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<h1>")
 	w.HTML(runtime.Escape(runtime.Or(input.Title, "Untitled")))
 	w.HTML("</h1>")
+	w.EndTemplate("nullish-fallback.marko")
 }

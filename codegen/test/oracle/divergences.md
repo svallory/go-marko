@@ -42,49 +42,100 @@ HTML-semantically significant.
 is `test.skip`, tagged `knownDivergence: "attrs spread / map key order"`,
 referencing this entry.
 
-## 2. Optional `Marko.Body` content emits a resume-bootstrap tail (JS side only)
+## 2. ~~Optional `Marko.Body` content emits a resume-bootstrap tail~~ CLOSED
 
-**Fixture:** `ui/pages/attrs-spread.marko` (same fixture as #1 --
-`content?: Marko.Body` on `panel.marko`, populated by the caller).
+**Closed by FR12 wave 1, Phase C.** go-marko now emits the resume payload
+itself, so there is nothing left to strip: `_el_resume`, `_scope`, `_script`
+and `_trailers` are real translators (`codegen/src/resume.mjs`) feeding the
+Writer's resume channel (`runtime/resume.go`).
 
-**Symptom:** the JS renderer appends, after otherwise-identical markup:
+`helpers.mjs`'s `RESUME_BOOTSTRAP_TAIL` regex and the per-case
+`stripResumeBootstrap` flag are **deleted**; every oracle case now asserts the
+FULL byte match, resume payload included, and `attrs-spread.marko` -- the
+fixture that used to need the strip -- passes it.
 
-```html
-<!--M_*2 a--><script>(e=>(self[e]||=...))("M")("_");M._.r=["<hash> 2"];M._.w()</script>
+One thing had to change for that to be possible. Registry ids (the `_script`
+content hashes that appear verbatim in the payload) hash the template's
+**absolute file path**, not its bytes (wire contract sec 15.1). The Go pipeline
+generates from a temp module copy, so the JS oracle now compiles that same temp
+copy rather than `fixtures/` -- `renderWithJsOracle` takes a fixture-RELATIVE
+path and resolves it against the shared temp root. Rendering the two halves
+from different paths produces payloads that differ only in ids, which is the
+kind of false failure that would have made the whole suite untrustworthy.
+
+## 3. Optional scalar attribute: `undefined` vs the Go zero value
+
+**Fixture:** the quickstart's `ui-button.marko` (`target?: string`,
+`class?: string`), reached from `reactive.marko` / `landing.marko`.
+
+**Symptom (before the fix):**
+
+```
+JS:  <a href=/counter class="...">
+Go:  <a href=/counter target class="...">
 ```
 
-go-marko emits nothing here -- by design, it drops all resume/scope
-bookkeeping (see `transpile.mjs`'s `RESUME_ONLY` set and
-`notes/fr12-resume-findings.md`).
+and, in the payload, `{h:"/counter",i:"",l:"",m:[...]}` where JS wrote
+`{h:"/counter",m:[...]}`.
 
-**Root cause:** Marko 6's dynamic-content mechanism (`_content()` in
-`@marko/runtime-tags/html`) needs a resume accessor to know, at hydration
-time, whether OPTIONAL body content was actually passed -- this is
-intrinsic to the current compiler/runtime; there is no `output`/render
-option that suppresses it for `output: "html"` (checked
-`@marko/compiler`'s `config.d.ts`: no resumable/hydrate flag applies).
-Confirmed NOT triggered by:
-- a REQUIRED `content: Marko.Body` (`composed.marko`'s page-layout, or any
-  `@head` attr tag) -- no marker at all.
-- a plain custom-tag call with only typed scalar/struct props and no body
-  content (`vendor-tag.marko`, `nested-input.marko`, ...) -- no marker.
+**Root cause:** Go has no "unset" for a scalar struct field, so marko-go's
+generated Input structs use the ZERO VALUE to mean "attribute not passed"
+(`inputstruct.mjs`). That is invisible while a template only makes rendering
+DECISIONS from the field, but the wire distinguishes the two: JS receives
+`undefined` for an omitted attribute and Marko drops it from both the markup
+and the resume payload, while a real `""` renders as a bare attribute and
+serializes as `""`.
 
-So the trigger is specifically: **optional** `Marko.Body` /
-`Marko.AttrTag<...>` content that the caller populates.
+**Status: fixed.** `runtime.Absent(v)` maps a Go zero value back to
+`runtime.Undefined`, and generated code wraps every read of an OPTIONAL scalar
+input field in the two places where the difference is observable: attribute
+values and resume-payload values (including array elements, since a
+`<const/classes=[...]>` array feeds both). `Attr`/`Attrs` treat `Undefined` as
+void and the serializer drops it in object position / writes the positional `$`
+hole in array position -- exactly JS's behaviour in each place.
 
-**Status:** expected divergence for the wave-1 (no resumability) subset;
-this is exactly the shape of gap the resumability wave (FR12) exists to
-close -- `_content`/`_resume_branch` become real translators there instead
-of `RESUME_ONLY` drops.
+The cost is the documented flip side of the zero-value convention: a template
+that deliberately passes `target=""` is now indistinguishable from one that
+omits it. That trade was already made by the Input struct shape; `Absent` only
+makes both ends agree about which side of it we are on.
 
-**Test disposition:** NOT skipped -- `helpers.mjs`'s
-`renderWithJsOracle(..., { stripResumeBootstrap: true })` strips the exact
-documented `RESUME_BOOTSTRAP_TAIL` pattern from the JS oracle's output
-before comparing, so everything else in the fixture (attribute merging,
-body rendering, spread ordering aside from #1) still gets a real
-byte-comparison. TODO for the resumability wave: once `_content`/
-`_el_resume`/`_resume_branch` are real translators, delete
-`stripResumeBootstrap` and its fixture annotation, and assert the FULL
-byte match including the resume tail (Go will need to start emitting an
-equivalent, at which point this becomes a real golden case instead of a
-stripped one).
+## 4. `runtime.String` collapses a falsy operand, losing `false` on the wire
+
+**Fixture:** the quickstart's `navbar.marko`:
+`class=($global.path === "/counter" && "bg-accent text-accent-foreground")`,
+passed to `ui-button`'s `class?: string`.
+
+**Symptom:** one byte pair in the resume payload, on all three quickstart
+pages:
+
+```
+JS:  m:[_.a,_.b,"h-9 px-4 py-2",!1]
+Go:  m:[_.a,_.b,"h-9 px-4 py-2",$]
+```
+
+`!1` is `false`; `$` is `undefined`. Everything else on those pages --
+markup, markers, scope ids, deltas, script entries -- is byte-identical.
+
+**Root cause:** JS `&&` returns an OPERAND, so an unmatched condition yields
+`false`, and `false` is what gets serialized. The callee declares
+`class?: string`, so the call site coerces with `runtime.String`, which is
+documented to collapse ANY falsy value to `""` ("the Go zero value the field
+would have held had the attribute been omitted entirely"). `Absent` then reads
+that `""` as absent. The `false` is gone before the payload is built, and it
+cannot be recovered without widening optional scalar Input fields to `any`.
+
+**Impact:** none functionally. Both `false` and `undefined` are falsy to the
+client, and `AttrClass` skips either -- the rendered class list is identical,
+and hydration reads the same absence. It is a byte divergence in a value whose
+only consumer treats the two identically.
+
+**Status:** open, deliberately. Closing it means changing how optional scalar
+Input fields are TYPED (`class?: string` -> `any`), which reaches well past
+resumability into the whole Input-struct contract, and would make every
+template that reads such a field pay a type assertion. Revisit alongside
+divergence #1 (`attrs` ordering), which wants the same kind of
+richer-value-representation change.
+
+**Test disposition:** not covered by the golden/oracle fixtures (no fixture
+passes a value-position `&&` into an optional string field); recorded here from
+the Phase C quickstart byte-comparison.

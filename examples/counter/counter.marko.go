@@ -10,10 +10,13 @@ type CounterInput struct {
 
 // Counter renders the counter.marko template into w.
 func Counter(w *runtime.Writer, input CounterInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<html><head><meta charset=UTF-8><meta name=viewport content=\"width=device-width, initial-scale=1.0\"><title>Counts</title></head><body><h1>Counts</h1><div>Global: ")
 	w.HTML(runtime.Escape(input.Global))
 	w.HTML("</div><div>User: ")
 	w.HTML(runtime.Escape(input.User))
 	w.HTML("</div><form action=\"/\" method=POST><div><button type=submit name=global value=global>Global</button></div><div><button type=submit name=user value=user>User</button></div></form>")
-	w.HTML("</body></html>")
+	w.Trailer("</body></html>")
+	w.EndTemplate("counter.marko")
 }

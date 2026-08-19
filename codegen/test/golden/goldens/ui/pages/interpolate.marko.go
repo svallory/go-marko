@@ -9,7 +9,10 @@ type InterpolateInput struct {
 
 // Interpolate renders the interpolate.marko template into w.
 func Interpolate(w *runtime.Writer, input InterpolateInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<div>Hello, ")
 	w.HTML(runtime.Escape(input.Name))
 	w.HTML("!</div>")
+	w.EndTemplate("interpolate.marko")
 }

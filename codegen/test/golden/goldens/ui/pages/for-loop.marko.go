@@ -9,8 +9,11 @@ type ForLoopInput struct {
 
 // ForLoop renders the for-loop.marko template into w.
 func ForLoop(w *runtime.Writer, input ForLoopInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<ul>")
 	runtime.ForOfIndexed(input.Items, func(item string, i int) {
+		w.AllocScopeID()
 		w.HTML("<li>")
 		w.HTML(runtime.Escape(i))
 		w.HTML(": ")
@@ -18,4 +21,5 @@ func ForLoop(w *runtime.Writer, input ForLoopInput) {
 		w.HTML("</li>")
 	})
 	w.HTML("</ul>")
+	w.EndTemplate("for-loop.marko")
 }

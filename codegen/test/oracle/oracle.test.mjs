@@ -1,7 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import path from "node:path";
 import {
-  FIXTURES,
   cleanupSharedGoModule,
   renderWithGoPipeline,
   renderWithJsOracle,
@@ -196,12 +194,6 @@ const CASES = [
     pkgImportRel: "pages",
     func: "AttrsSpread",
     inputs: [{ jsInput: {}, goInput: "pages.AttrsSpreadInput{}" }],
-    // KNOWN_DIVERGENCE: optional `Marko.Body` content (divergences.md) --
-    // the JS renderer appends a resume-bootstrap tail even with zero
-    // reactivity, which go-marko never emits by design. Stripped here
-    // rather than skipped: everything BEFORE the tail is still asserted
-    // byte-equal.
-    stripResumeBootstrap: true,
     // KNOWN_DIVERGENCE: "attrs spread / map key order" (divergences.md) --
     // Go's `map[string]any` has no defined iteration order, so
     // runtime.Attrs sorts spread keys alphabetically; JS preserves the
@@ -229,10 +221,10 @@ describe("JS byte-oracle: Go output matches Marko's real JS html renderer", () =
       testFn(
         c.knownDivergence ? `${label} -- KNOWN_DIVERGENCE: ${c.knownDivergence}` : label,
         async () => {
-          const markoFile = path.join(FIXTURES, c.marko);
-          const jsHtml = await renderWithJsOracle(markoFile, variant.jsInput, {
-            stripResumeBootstrap: c.stripResumeBootstrap ?? false,
-          });
+          // Relative, not absolute: the oracle compiles the SAME temp copy
+          // the Go pipeline generated from, because registry ids hash the
+          // absolute path. See renderWithJsOracle.
+          const jsHtml = await renderWithJsOracle(c.marko, variant.jsInput);
           const goHtml = await renderWithGoPipeline({
             pkgName: c.pkg,
             pkgImportRel: c.pkgImportRel,

@@ -9,7 +9,10 @@ type TinyBadgeInput struct {
 
 // TinyBadge renders the tiny-badge.marko template into w.
 func TinyBadge(w *runtime.Writer, input TinyBadgeInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<span class=tiny-badge>")
 	w.HTML(runtime.Escape(input.Label))
 	w.HTML("</span>")
+	w.EndTemplate("tiny-badge.marko")
 }

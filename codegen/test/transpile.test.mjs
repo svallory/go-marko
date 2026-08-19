@@ -30,10 +30,25 @@ function go(body, opts = {}) {
 }
 
 /** Body of the generated render func, trimmed, for compact assertions. */
+/**
+ * The render func's body, with the invariant `w.BeginTemplate()` /
+ * `w.EndTemplate(...)` bracket stripped.
+ *
+ * Every generated render function carries that pair (FR12: it maintains the
+ * Writer's render depth, which decides who flushes the resume payload -- see
+ * runtime.Writer.BeginTemplate). Repeating it in ~40 body assertions would
+ * bury what each one is actually about, so it is asserted ONCE, here, and
+ * removed; a template that lost the bracket fails every one of them at the
+ * throw below rather than passing quietly.
+ */
 function renderBody(code) {
   const m = /func Widget\(w \*runtime\.Writer, input WidgetInput\) \{\n([\s\S]*?)\n\}\n$/.exec(code);
   if (!m) throw new Error("could not find render func in:\n" + code);
-  return m[1].split("\n").map((l) => l.replace(/^\t/, "")).join("\n");
+  const lines = m[1].split("\n").map((l) => l.replace(/^\t/, ""));
+  if (lines[0] !== "w.BeginTemplate()" || lines[lines.length - 1] !== 'w.EndTemplate("widget.marko")') {
+    throw new Error("render func is missing its BeginTemplate/EndTemplate bracket:\n" + code);
+  }
+  return lines.slice(1, -1).join("\n");
 }
 
 describe("expressions", () => {
@@ -136,12 +151,69 @@ describe("intrinsics", () => {
     expect(code).toContain(`w.HTML(" src=x></script>")`);
   });
 
-  test("resume-only intrinsics are dropped entirely", () => {
+  test("resume intrinsics become Writer calls; guarded ones drop", () => {
+    // FR12. `_scope_id` binds a real per-render id, `_script` records an
+    // effect entry, and the `(_serialize_if(...)) && _scope(...)` statement
+    // drops because every serialize guard is statically 0 in wave 1 (see
+    // resume.mjs's module header for why).
     const code = go(
       `const $r = _scope_reason();\nconst $s = _scope_id();\n_html("hi");\n_script($s, "x");\n(_serialize_if($r, 0)) && _scope($s, {});`,
       { imports: ["_scope_reason", "_scope_id", "_script", "_serialize_if", "_scope"] },
     );
-    expect(renderBody(code)).toBe(`w.HTML("hi")`);
+    expect(renderBody(code)).toBe(
+      [`s := w.AllocScopeID()`, `w.HTML("hi")`, `w.AddScript("x", s)`].join("\n"),
+    );
+  });
+
+  test("an UNGUARDED _scope serializes, with ordered key/value pairs", () => {
+    const code = go(
+      `const $s = _scope_id();\n_scope($s, {d: input.count, _: _scope_with_id($s)});`,
+      {
+        imports: ["_scope_id", "_scope", "_scope_with_id"],
+        inputFields: [{ name: "Count", goType: "float64" }],
+      },
+    );
+    expect(renderBody(code)).toBe(
+      [
+        `s := w.AllocScopeID()`,
+        `w.AddScope(s, runtime.ScopeStateOf("d", input.Count, "_", runtime.Scope(s)))`,
+      ].join("\n"),
+    );
+  });
+
+  test("_el_resume becomes a marker; a guarded one emits nothing", () => {
+    const code = go(
+      `const $r = _scope_reason();\nconst $s = _scope_id();\n_html(\`<i></i>\${_el_resume($s, "a")}<b></b>\${_el_resume($s, "b", (_serialize_guard($r, 1)))}\`);`,
+      { imports: ["_scope_reason", "_scope_id", "_el_resume", "_serialize_guard"] },
+    );
+    expect(renderBody(code)).toBe(
+      [
+        `s := w.AllocScopeID()`,
+        `w.HTML("<i></i>")`,
+        `w.Marker(runtime.OpResume, s, "a")`,
+        `w.HTML("<b></b>")`,
+      ].join("\n"),
+    );
+  });
+
+  test("_trailers goes to the trailer buffer, not the HTML stream", () => {
+    // It must land AFTER the resume payload script, which is exactly what the
+    // Writer's separate trailer buffer is for.
+    const code = go(`_html("</main>"), _trailers("</body></html>");`, {
+      imports: ["_trailers"],
+    });
+    expect(renderBody(code)).toBe(
+      [`w.HTML("</main>")`, `w.Trailer("</body></html>")`].join("\n"),
+    );
+  });
+
+  test("a scope id nothing reads keeps its CALL but loses the binding", () => {
+    // Dropping the call would shift every later id on the wire; keeping an
+    // unused Go variable would not compile.
+    const code = go(`const $s = _scope_id();\n_html("hi");`, {
+      imports: ["_scope_id"],
+    });
+    expect(renderBody(code)).toBe([`w.AllocScopeID()`, `w.HTML("hi")`].join("\n"));
   });
 
   test("_dynamic_tag over an input body becomes a nil-guarded call", () => {

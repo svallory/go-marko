@@ -10,13 +10,17 @@ type AttrsSpreadInput struct{}
 
 // AttrsSpread renders the attrs-spread.marko template into w.
 func AttrsSpread(w *runtime.Writer, input AttrsSpreadInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	widgets.Panel(w, widgets.PanelInput{
 		Attrs: map[string]any{
 			"id":        "main-panel",
 			"data-role": "container",
 		},
 		Content: func(w *runtime.Writer) {
+			w.AllocScopeID()
 			w.HTML("spread body")
 		},
 	})
+	w.EndTemplate("attrs-spread.marko")
 }

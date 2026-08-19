@@ -10,12 +10,16 @@ type HelloInput struct {
 
 // Hello renders the hello.marko template into w.
 func Hello(w *runtime.Writer, input HelloInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<div><h1>Hello ")
 	w.HTML(runtime.Escape(input.Name))
 	w.HTML("!</h1>")
 	if runtime.Truthy(len(input.Items)) {
+		w.AllocScopeID()
 		w.HTML("<ul>")
 		runtime.ForOf(input.Items, func(item string) {
+			w.AllocScopeID()
 			w.HTML("<li>")
 			w.HTML(runtime.Escape(item))
 			w.HTML("</li>")
@@ -23,4 +27,5 @@ func Hello(w *runtime.Writer, input HelloInput) {
 		w.HTML("</ul>")
 	}
 	w.HTML("</div>")
+	w.EndTemplate("hello.marko")
 }

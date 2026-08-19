@@ -15,10 +15,13 @@ type PageLayoutInputHead struct {
 
 // PageLayout renders the page-layout.marko template into w.
 func PageLayout(w *runtime.Writer, input PageLayoutInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<!DOCTYPE html><html lang=en><head><meta charset=UTF-8><title>")
 	w.HTML(runtime.Escape(runtime.Or(input.Title, "goldenfix")))
 	w.HTML("</title>")
 	if input.Head != nil {
+		w.AllocScopeID()
 		if input.Head.Content != nil {
 			input.Head.Content(w)
 		}
@@ -27,5 +30,6 @@ func PageLayout(w *runtime.Writer, input PageLayoutInput) {
 	if input.Content != nil {
 		input.Content(w)
 	}
-	w.HTML("</body></html>")
+	w.Trailer("</body></html>")
+	w.EndTemplate("page-layout.marko")
 }

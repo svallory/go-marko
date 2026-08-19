@@ -9,9 +9,14 @@ type IfElseInput struct {
 
 // IfElse renders the if-else.marko template into w.
 func IfElse(w *runtime.Writer, input IfElseInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	if runtime.Truthy(input.LoggedIn) {
+		w.AllocScopeID()
 		w.HTML("<p>Welcome back.</p>")
 	} else {
+		w.AllocScopeID()
 		w.HTML("<p>Please log in.</p>")
 	}
+	w.EndTemplate("if-else.marko")
 }

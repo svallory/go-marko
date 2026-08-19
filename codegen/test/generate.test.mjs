@@ -20,6 +20,7 @@ let files; // outPath -> generated Go source
 const EXPECTED = [
   ["pages/counter.marko.go", "pages", "Counter"],
   ["pages/landing.marko.go", "pages", "Landing"],
+  ["pages/reactive.marko.go", "pages", "Reactive"],
   ["tags/elements/ui-button.marko.go", "elements", "UiButton"],
   ["tags/icons/icon-book.marko.go", "icons", "IconBook"],
   ["tags/icons/icon-eclipse.marko.go", "icons", "IconEclipse"],
@@ -54,7 +55,7 @@ function src(rel) {
 }
 
 describe("generate over the quickstart fixture", () => {
-  test("emits one .marko.go next to each of the 10 templates, plus globals", () => {
+  test("emits one .marko.go next to each of the 11 templates, plus globals", () => {
     // globals.marko.go is not a template -- it's the ui.Globals struct
     // generated from ui/global.d.ts (FR10), emitted next to the .d.ts.
     expect([...files.keys()].sort()).toEqual(
@@ -106,7 +107,11 @@ describe("generate over the quickstart fixture", () => {
   test("ui-button uses runtime.Attrs, runtime.Or and module-level consts", () => {
     const code = src("tags/elements/ui-button.marko.go");
     expect(code).toContain("runtime.Attrs(");
-    expect(code).toContain('runtime.A{Name: "href", Value: input.Href}');
+    // FR12: `href?: string` is OPTIONAL, so its read is wrapped -- the Go
+    // zero value "" has to reach the wire as `undefined`, or an unset
+    // attribute renders as a bare ` href` and serializes as `""` instead of
+    // vanishing. See runtime.Absent.
+    expect(code).toContain('runtime.A{Name: "href", Value: runtime.Absent(input.Href)}');
     expect(code).toContain('runtime.A{Name: "class", Value: classes}');
     // `...input.attrs` spread becomes a bare map item for runtime.Attrs.
     expect(code).toContain(", input.Attrs))");
@@ -148,8 +153,10 @@ describe("generate over the quickstart fixture", () => {
     expect(code).not.toContain("_attr_nonce");
     // The compiler splits the literal at the (dropped) nonce interpolation.
     expect(code).toContain('w.HTML("<link href=/assets/css/output.css rel=stylesheet><script")');
-    // `_trailers("</body></html>")` carries real deferred markup.
-    expect(code).toContain('w.HTML("</body></html>")');
+    // `_trailers("</body></html>")` carries real deferred markup, and it must
+    // land AFTER the resume payload script -- hence the trailer buffer, not
+    // the HTML stream.
+    expect(code).toContain('w.Trailer("</body></html>")');
     // title uses ?? and goes through the escaper
     expect(code).toContain('w.HTML(runtime.Escape(runtime.Or(input.Title, "go-marko App")))');
     // `<${input.content}/>` -> nil-guarded body call
@@ -200,7 +207,7 @@ describe("generate over the quickstart fixture", () => {
 describe("project plumbing", () => {
   test("findMarkoFiles walks recursively and sorts", () => {
     const found = findMarkoFiles(uiDir).map((f) => path.relative(uiDir, f));
-    expect(found).toHaveLength(10);
+    expect(found).toHaveLength(11);
     expect(found).toEqual([...found].sort());
   });
 

@@ -10,15 +10,20 @@ type ComposedInput struct{}
 
 // Composed renders the composed.marko template into w.
 func Composed(w *runtime.Writer, input ComposedInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	layouts.PageLayout(w, layouts.PageLayoutInput{
 		Title: "Composed",
 		Head: &layouts.PageLayoutInputHead{
 			Content: func(w *runtime.Writer) {
+				w.AllocScopeID()
 				w.HTML("<meta name=description content=\"golden fixture\">")
 			},
 		},
 		Content: func(w *runtime.Writer) {
+			w.AllocScopeID()
 			w.HTML("<p>page body</p>")
 		},
 	})
+	w.EndTemplate("composed.marko")
 }

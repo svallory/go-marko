@@ -10,6 +10,8 @@ type PanelInput struct {
 
 // Panel renders the panel.marko template into w.
 func Panel(w *runtime.Writer, input PanelInput) {
+	w.BeginTemplate()
+	scope0_id := w.AllocScopeID()
 	w.HTML("<div")
 	w.HTML(runtime.Attrs(runtime.A{Name: "class", Value: "panel"}, input.Attrs))
 	w.HTML(">")
@@ -17,4 +19,8 @@ func Panel(w *runtime.Writer, input PanelInput) {
 		input.Content(w)
 	}
 	w.HTML("</div>")
+	w.Marker(runtime.OpResume, scope0_id, "a")
+	w.AddScript("lrYmeYG", scope0_id)
+	w.TouchScope(scope0_id)
+	w.EndTemplate("panel.marko")
 }

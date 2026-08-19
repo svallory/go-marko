@@ -9,7 +9,10 @@ type AttrClassArrayInput struct {
 
 // AttrClassArray renders the attr-class-array.marko template into w.
 func AttrClassArray(w *runtime.Writer, input AttrClassArrayInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<div")
 	w.HTML(runtime.AttrClass([]any{"row", runtime.And(input.Active, "row-active")}))
 	w.HTML(">content</div>")
+	w.EndTemplate("attr-class-array.marko")
 }

@@ -10,8 +10,11 @@ type GlobalReadInput struct{}
 
 // GlobalRead renders the global-read.marko template into w.
 func GlobalRead(w *runtime.Writer, input GlobalReadInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	markoGlobal, _ := w.Globals().(ui.Globals)
 	w.HTML("<div>Current path: ")
 	w.HTML(runtime.Escape(markoGlobal.Path))
 	w.HTML("</div>")
+	w.EndTemplate("global-read.marko")
 }

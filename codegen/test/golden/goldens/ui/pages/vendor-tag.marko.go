@@ -10,9 +10,12 @@ type VendorTagInput struct{}
 
 // VendorTag renders the vendor-tag.marko template into w.
 func VendorTag(w *runtime.Writer, input VendorTagInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<div>")
 	tiny_tags.TinyBadge(w, tiny_tags.TinyBadgeInput{
 		Label: "hi",
 	})
 	w.HTML("</div>")
+	w.EndTemplate("vendor-tag.marko")
 }

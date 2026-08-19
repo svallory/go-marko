@@ -59,38 +59,8 @@ plugin({
 });
 
 /**
- * The resume-bookkeeping tail Marko 6's `html` renderer appends even with
- * NO reactivity, NO `<let>`, and NO events -- observed on exactly one class
- * of fixture here: a tag with an OPTIONAL `Marko.Body` content field
- * (`content?: Marko.Body`) that the caller actually populates. A REQUIRED
- * `content: Marko.Body` (see `composed.marko`'s page-layout, or any
- * `@head` attr tag) emits no marker at all -- only the optional case needs
- * a runtime accessor to know at hydration time whether content was passed.
- *
- * There is no compiler/render option to suppress this (checked
- * `@marko/compiler`'s `config.d.ts`: no resumable/hydrate flag applies to
- * `output: "html"`) -- it is intrinsic to Marko 6's dynamic-content
- * mechanism today. go-marko drops all resume bookkeeping by design (see
- * transpile.mjs's `RESUME_ONLY` set / notes/fr12-resume-findings.md), so
- * for the flat, non-reactive subset this suite covers, stripping this
- * EXACT documented tail from the JS oracle's output is the correct
- * normalization, not papering over a real divergence: everything BEFORE
- * the tail is asserted byte-equal; only this trailing resume-bootstrap
- * artifact (which writes nothing meaningful for a page that never
- * hydrates) is elided. See divergences.md "optional Marko.Body content"
- * for the TODO this leaves for the resumability wave (FR12).
- *
- * Pattern: an HTML comment `<!--M_*N acc-->` (the resume marker for scope
- * N / accessor `acc`) immediately followed by the `<script>...</script>`
- * bootstrap that wires up the client-side resume runtime, both always at
- * the very end of the document in the single-render (no streaming) case
- * this suite exercises.
- */
-export const RESUME_BOOTSTRAP_TAIL = /<!--M_\*\d+[^>]*-->\s*<script>.*<\/script>\s*$/s;
-
-/**
- * Render `markoFile` through the real JS pipeline (compile -> import ->
- * .render(input)) and return the resulting HTML string.
+ * Render a fixture template through the real JS pipeline (compile -> import
+ * -> .render(input)) and return the resulting HTML string.
  *
  * `input` is the plain JS object passed to `.render()` -- for a template
  * that reads `$global`, put those fields under `input.$global` (that's how
@@ -98,18 +68,28 @@ export const RESUME_BOOTSTRAP_TAIL = /<!--M_\*\d+[^>]*-->\s*<script>.*<\/script>
  * `render(input)`; see the compiled `_$global()` call in the transpiled
  * output).
  *
- * `stripResumeBootstrap: true` elides the tail described by
- * `RESUME_BOOTSTRAP_TAIL` -- opt-in per case, so a fixture that
- * unexpectedly starts emitting one fails loudly instead of silently
- * passing.
+ * ## Why this renders the TEMP COPY, not `fixtures/`
+ *
+ * Registry ids -- the `_script`/`_content` content hashes that appear
+ * verbatim in the resume payload -- hash the template's ABSOLUTE FILE PATH,
+ * not just its bytes (wire contract sec 15.1: identical bytes at three
+ * different paths produced three different ids). The Go side generates from
+ * the temp module `buildSharedGoModule` creates, so the JS oracle must
+ * compile the SAME files at the SAME paths or every payload comparison fails
+ * on ids alone -- while the markup around them matches perfectly, which is
+ * exactly the kind of false failure that erodes trust in a byte oracle.
+ *
+ * `relMarko` is therefore a path relative to the fixtures root, resolved
+ * against the shared temp module. Callers never name an absolute path, so
+ * the two halves cannot drift apart.
  */
-export async function renderWithJsOracle(markoFile, input = {}, { stripResumeBootstrap = false } = {}) {
+export async function renderWithJsOracle(relMarko, input = {}) {
+  const tmpRoot = await getSharedGoModule();
   // Loaded through the process-global `marko-go-oracle-loader` plugin
-  // above (not compiled here directly) so `markoFile`'s own `.marko`
-  // imports resolve through the same loader, transitively.
-  const mod = await import(markoFile);
-  const rendered = String(mod.default.render(input));
-  return stripResumeBootstrap ? rendered.replace(RESUME_BOOTSTRAP_TAIL, "") : rendered;
+  // above (not compiled here directly) so the entry's own `.marko` imports
+  // resolve through the same loader, transitively.
+  const mod = await import(path.join(tmpRoot, relMarko));
+  return String(mod.default.render(input));
 }
 
 /**
@@ -138,8 +118,26 @@ async function buildSharedGoModule() {
   // not under ui/ -- copy it too so vendor resolution still works from the
   // temp copy.
   const nmSrc = path.join(FIXTURES, "node_modules");
+  const nmDst = path.join(tmpRoot, "node_modules");
   if (fs.existsSync(nmSrc)) {
-    fs.cpSync(nmSrc, path.join(tmpRoot, "node_modules"), { recursive: true });
+    fs.cpSync(nmSrc, nmDst, { recursive: true });
+  }
+  // The JS oracle now renders the TEMP copy (see renderWithJsOracle), so the
+  // templates' own `import ... from "@marko/runtime-tags/html"` has to resolve
+  // from here too. The fixture's node_modules carries only the vendor tag
+  // package, so link this repo's runtime in beside it -- a symlink, so both
+  // halves load the SAME module instance at the pinned version rather than a
+  // second copy with its own module state.
+  fs.mkdirSync(path.join(nmDst, "@marko"), { recursive: true });
+  const runtimeLink = path.join(nmDst, "@marko", "runtime-tags");
+  if (!fs.existsSync(runtimeLink)) {
+    fs.symlinkSync(
+      path.dirname(
+        createRequire(import.meta.url).resolve("@marko/runtime-tags/package.json"),
+      ),
+      runtimeLink,
+      "dir",
+    );
   }
   // package.json is what node resolution -- both the real @marko/compiler
   // resolving a vendor tag's package, and this file's own createRequire

@@ -7,5 +7,8 @@ type StaticInput struct{}
 
 // Static renders the static.marko template into w.
 func Static(w *runtime.Writer, input StaticInput) {
+	w.BeginTemplate()
+	w.AllocScopeID()
 	w.HTML("<div class=static>Hello, static world.</div>")
+	w.EndTemplate("static.marko")
 }
