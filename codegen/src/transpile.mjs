@@ -37,7 +37,10 @@ const RESUME_ONLY = new Set([
 ]);
 
 // Intrinsics this transpiler actively understands and translates.
-const HANDLED = new Set(["_html", "_escape", "_for_of", "_if", "_template"]);
+// `_trailers` carries real markup (the compiler defers writing closing
+// tags, e.g. `</body></html>`, past where resumability markers would go)
+// -- same reasoning as `_for_of`'s parentEndTag, not resume-only.
+const HANDLED = new Set(["_html", "_escape", "_for_of", "_if", "_template", "_trailers"]);
 
 function capitalize(s) {
   return s.charAt(0).toUpperCase() + s.slice(1);
@@ -315,22 +318,36 @@ export function transpile(jsSource, { goPackage }) {
       return [translateIfStatement(node)];
     }
     if (t.isExpressionStatement(node)) {
-      const expr = node.expression;
-      if (isResumeOnlyCall(expr)) return [];
-      if (
-        t.isLogicalExpression(expr) &&
-        expr.operator === "&&" &&
-        isResumeOnlyCall(expr.right)
-      ) {
-        return []; // `(guard) && _scope(...)` -- resumability bookkeeping
+      // The compiler sometimes chains calls with the comma operator (e.g.
+      // `_html(...), _trailers(...)`) rather than separate statements --
+      // translate each comma-separated expression as its own statement.
+      const exprs = t.isSequenceExpression(node.expression)
+        ? node.expression.expressions
+        : [node.expression];
+      const out = [];
+      for (const expr of exprs) {
+        if (isResumeOnlyCall(expr)) continue;
+        if (
+          t.isLogicalExpression(expr) &&
+          expr.operator === "&&" &&
+          isResumeOnlyCall(expr.right)
+        ) {
+          continue; // `(guard) && _scope(...)` -- resumability bookkeeping
+        }
+        if (calleeIs(expr, "_html") || calleeIs(expr, "_trailers")) {
+          out.push(...translateHtmlCall(expr));
+        } else if (calleeIs(expr, "_for_of")) {
+          out.push(translateForOf(expr));
+        } else if (calleeIs(expr, "_if")) {
+          out.push(translateIfWrapper(expr));
+        } else {
+          throw new UnsupportedError(
+            `unsupported statement: expression of type ${expr.type}`,
+            node,
+          );
+        }
       }
-      if (calleeIs(expr, "_html")) return translateHtmlCall(expr);
-      if (calleeIs(expr, "_for_of")) return [translateForOf(expr)];
-      if (calleeIs(expr, "_if")) return [translateIfWrapper(expr)];
-      throw new UnsupportedError(
-        `unsupported statement: expression of type ${expr.type}`,
-        node,
-      );
+      return out;
     }
     throw new UnsupportedError(`unsupported statement type: ${node.type}`, node);
   }
