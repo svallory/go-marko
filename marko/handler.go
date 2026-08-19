@@ -18,14 +18,25 @@ import (
 // Content-Type to "text/html; charset=utf-8", and writes the resulting HTML.
 // Rendering is synchronous and unbuffered to the client: no streaming.
 //
+// Options configure request-scoped behaviour; see WithGlobals.
+//
 // Example:
 //
 //	mux := http.NewServeMux()
 //	mux.Handle("GET /", marko.Handler(pages.Landing))
-func Handler[T any](render func(*runtime.Writer, T)) http.Handler {
+//
+//	// with $global available to every template:
+//	mux.Handle("GET /", marko.Handler(pages.Landing,
+//		marko.WithGlobals(func(r *http.Request) ui.Globals {
+//			return ui.Globals{Path: r.URL.Path}
+//		}),
+//	))
+func Handler[T any](render func(*runtime.Writer, T), opts ...Option) http.Handler {
+	cfg := newConfig(opts)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input T
 		writer := runtime.New()
+		cfg.apply(writer, r)
 		render(writer, input)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(writer.String()))
@@ -54,10 +65,14 @@ func Handler[T any](render func(*runtime.Writer, T)) http.Handler {
 //		},
 //		pages.User,
 //	))
-func HandlerFunc[T any](build func(http.ResponseWriter, *http.Request) T, render func(*runtime.Writer, T)) http.Handler {
+//
+// Options configure request-scoped behaviour; see WithGlobals.
+func HandlerFunc[T any](build func(http.ResponseWriter, *http.Request) T, render func(*runtime.Writer, T), opts ...Option) http.Handler {
+	cfg := newConfig(opts)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		input := build(w, r)
 		writer := runtime.New()
+		cfg.apply(writer, r)
 		render(writer, input)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(writer.String()))

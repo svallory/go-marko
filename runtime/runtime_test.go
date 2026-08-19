@@ -270,3 +270,46 @@ func TestForOfIndexedAny(t *testing.T) {
 		}
 	})
 }
+
+type testGlobals struct{ Path string }
+
+// TestWriterGlobals covers the FR10 plumbing: generated code reads the
+// request context off the Writer with a COMMA-OK assertion, so every
+// "globals were never set" path has to yield a usable zero value rather
+// than panicking.
+func TestWriterGlobals(t *testing.T) {
+	t.Run("a fresh Writer has no globals", func(t *testing.T) {
+		w := New()
+		if got := w.Globals(); got != nil {
+			t.Fatalf("Globals() = %#v, want nil", got)
+		}
+	})
+
+	t.Run("SetGlobals round-trips the value", func(t *testing.T) {
+		w := New()
+		w.SetGlobals(testGlobals{Path: "/counter"})
+		g, ok := w.Globals().(testGlobals)
+		if !ok || g.Path != "/counter" {
+			t.Fatalf("Globals() = %#v, %v; want testGlobals{/counter}, true", g, ok)
+		}
+	})
+
+	// The two shapes generated code must survive. This is exactly the
+	// `markoGlobal, _ := w.Globals().(ui.Globals)` line it emits.
+	t.Run("an unset context asserts to the zero value, not a panic", func(t *testing.T) {
+		w := New()
+		g, _ := w.Globals().(testGlobals)
+		if g.Path != "" {
+			t.Fatalf("zero-value globals = %#v, want empty Path", g)
+		}
+	})
+
+	t.Run("globals of the wrong type assert to the zero value", func(t *testing.T) {
+		w := New()
+		w.SetGlobals("not the globals struct")
+		g, ok := w.Globals().(testGlobals)
+		if ok || g.Path != "" {
+			t.Fatalf("mistyped globals = %#v, %v; want zero value, false", g, ok)
+		}
+	})
+}
