@@ -2,6 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { compileMarko } from "./compile.mjs";
+import {
+  DEFAULT_CLIENT_DIR,
+  DEFAULT_CLIENT_URL,
+  bundlePage,
+  clientBundleName,
+  clientBundleURL,
+} from "./clientbundle.mjs";
 import { transpile } from "./transpile.mjs";
 import { UnsupportedError } from "./errors.mjs";
 import { parseInputInterface } from "./inputstruct.mjs";
@@ -10,6 +17,23 @@ import { pascalCase, sanitizeNpmPackageName, sanitizePackageName } from "./names
 
 /** Directory name every vendored (node_modules) template's Go lands under. */
 const MARKO_MODULES_DIR = "marko_modules";
+
+/**
+ * The `.marko` import specifiers a compiled module names.
+ *
+ * Used by the pass-1 entry-point scan (see generateProject). A regex rather
+ * than a parse because it runs over every template on every generate and the
+ * shape is fixed: @marko/compiler emits `import _x from "./y.marko";` for a
+ * custom tag, always a plain default import of a string literal. A false
+ * positive would only mark a template as "not an entry point", i.e. cost it a
+ * client bundle it can still be given explicitly -- not silently wrong output.
+ */
+export function markoImportSpecifiers(js) {
+  const out = [];
+  const re = /\bimport\s+[^;'"]*?from\s*["']([^"']+\.marko)["']/g;
+  for (let m; (m = re.exec(js)); ) out.push(m[1]);
+  return out;
+}
 
 /** Recursively collect `**\/*.marko` under `dir`, sorted for determinism. */
 export function findMarkoFiles(dir) {
@@ -255,7 +279,16 @@ export function addVendorTemplate(
  *                    jsAssets: {kind: string, outPath: string, code: string}[],
  *                    diagnostics: {severity: string, markoPath: string, error: Error}[]}>}
  */
-export async function generateProject(root, { write = true, bestEffort = false } = {}) {
+export async function generateProject(
+  root,
+  {
+    write = true,
+    bestEffort = false,
+    client = true,
+    clientDir = null,
+    clientURL = DEFAULT_CLIENT_URL,
+  } = {},
+) {
   const abs = path.resolve(root);
   if (!fs.existsSync(abs) || !fs.statSync(abs).isDirectory()) {
     throw new UnsupportedError(`not a directory: ${abs}`);
@@ -289,7 +322,77 @@ export async function generateProject(root, { write = true, bestEffort = false }
   // by it: iterating a Map always sees keys added before the iterator
   // finishes, in insertion order. That is what makes recursive package-
   // internal imports "just work" with one flat loop.
+  // ---------------------------------------------------------------------
+  // Pass 1: compile every template to html-target JS and record which
+  // templates are IMPORTED by another.
+  //
+  // FR12 needs the answer to "which templates are pages?" BEFORE any Go is
+  // emitted, because a page's generated Go carries the `<script src>` for its
+  // own client bundle. There is no compiler signal for it: @marko/compiler
+  // marks every non-embedded template `page` (the third `_template`
+  // argument), so that flag cannot tell a page apart from a tag it calls --
+  // in JS the distinction is simply which template `.render()` was invoked
+  // on. The computable analogue is ENTRY POINT: a project template that no
+  // other template imports. That is exactly the set a Go handler mounts as a
+  // route, it needs no directory convention, and it degrades sensibly (a tag
+  // nothing uses yet gets a bundle it does not need, rather than a page
+  // silently getting none).
+  //
+  // Compiles are memoized here rather than repeated in pass 3: `compileMarko`
+  // is the expensive part of generation, and both the import scan and the
+  // registry-id cross-check need the same bytes the server will ship.
+  const htmlCompiles = new Map();
+  const importedByAnother = new Set();
+  for (const entry of [...registry.values()]) {
+    try {
+      const js = await compileMarko(entry.markoPath);
+      htmlCompiles.set(entry.markoPath, js);
+      for (const spec of markoImportSpecifiers(js)) {
+        const dep = resolveDependency(entry, spec);
+        if (dep) importedByAnother.add(dep.markoPath);
+      }
+    } catch (err) {
+      if (!bestEffort) throw err;
+      diagnostics.push({ severity: "error", markoPath: entry.markoPath, error: err });
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Pass 2: bundle each page for the browser. Runs before Go generation so
+  // pass 3 knows each page's bundle URL -- or that it has none, in which case
+  // the page emits no script tag at all.
+  const bundleURLs = new Map();
+  if (client) {
+    for (const entry of [...registry.values()]) {
+      if (entry.vendor || importedByAnother.has(entry.markoPath)) continue;
+      const htmlCode = htmlCompiles.get(entry.markoPath);
+      if (htmlCode === undefined) continue; // failed to compile in pass 1
+      try {
+        const asset = await buildClientAsset(entry, htmlCode);
+        if (asset) {
+          jsAssets.push(asset);
+          bundleURLs.set(entry.markoPath, asset.url);
+        }
+      } catch (err) {
+        if (!bestEffort) throw err;
+        diagnostics.push({ severity: "error", markoPath: entry.markoPath, error: err });
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // Pass 3: emit Go.
+  //
+  // Vendor (node_modules) templates are discovered lazily, while resolving
+  // imports of project templates (or of OTHER vendor templates -- a package
+  // tag can import a sibling tag from its own package). `registry` is a Map,
+  // and entries `addVendorTemplate` adds during this `for` are still visited
+  // by it: iterating a Map always sees keys added before the iterator
+  // finishes, in insertion order. That is what makes recursive package-
+  // internal imports "just work" with one flat loop.
+  const alreadyFailed = new Set(diagnostics.map((d) => d.markoPath));
   for (const entry of registry.values()) {
+    if (alreadyFailed.has(entry.markoPath)) continue;
     try {
       goFiles.push(await generateOne(entry, registry));
     } catch (err) {
@@ -300,8 +403,60 @@ export async function generateProject(root, { write = true, bestEffort = false }
 
   return { goFiles, jsAssets, diagnostics };
 
+  /**
+   * Bundle one page for the browser, or return null when it has no client
+   * code -- in which case the page ships no bundle and no script tag, so a
+   * static page costs a browser exactly nothing.
+   */
+  async function buildClientAsset(entry, htmlCode) {
+    const built = await bundlePage(entry.markoPath, htmlCode);
+    if (!built) return null;
+    const name = clientBundleName(abs, entry.markoPath);
+    const outPath = path.join(clientDir ?? path.join(abs, DEFAULT_CLIENT_DIR), `${name}.js`);
+    if (write) {
+      fs.mkdirSync(path.dirname(outPath), { recursive: true });
+      fs.writeFileSync(outPath, built.code);
+    }
+    return {
+      kind: "client-bundle",
+      outPath,
+      code: built.code,
+      markoPath: entry.markoPath,
+      url: clientBundleURL(clientURL, name),
+      registryIds: built.ids,
+    };
+  }
+
+  /**
+   * Resolve one `.marko` import specifier from `entry` to a registry entry,
+   * adding a vendor template if that is what it names. Shared by the pass-1
+   * import scan and pass 3's `resolveTag`, so the two cannot disagree about
+   * what a specifier means.
+   */
+  function resolveDependency(entry, specifier) {
+    const isRelative = specifier.startsWith(".") || specifier.startsWith("/");
+    if (isRelative) {
+      const dep = registry.get(path.resolve(entry.dir, specifier));
+      if (dep) return dep;
+      // A relative specifier inside a VENDOR template (a package tag
+      // importing a sibling tag from its own package) doesn't live in the
+      // project registry -- resolve it with node resolution too, scoped to
+      // the importing template's own npm package.
+      if (entry.vendor) {
+        return addVendorTemplate(registry, specifier, entry.markoPath, mod, entry.npmName);
+      }
+      return null;
+    }
+    // Bare specifier: `import _fancyBadge from "fancy-tags/dist/tags/
+    // fancy-badge.marko"`. Resolve it with node resolution from the FILE
+    // THAT IMPORTS IT -- for a project template that's the project's own
+    // node_modules; for a vendor template that's the package's own. We always
+    // resolve from `entry`, never from codegen's own node_modules.
+    return addVendorTemplate(registry, specifier, entry.markoPath, mod);
+  }
+
   async function generateOne(entry, registry) {
-    const js = await compileMarko(entry.markoPath);
+    const js = htmlCompiles.get(entry.markoPath) ?? (await compileMarko(entry.markoPath));
 
     // Aliases are per generated FILE: every cross-directory dependency is
     // imported under its package name, with a numeric suffix on collision
@@ -310,26 +465,7 @@ export async function generateProject(root, { write = true, bestEffort = false }
     const takenAliases = new Set([entry.pkgName, "runtime"]);
 
     const resolveTag = (specifier) => {
-      let dep;
-      const isRelative = specifier.startsWith(".") || specifier.startsWith("/");
-      if (isRelative) {
-        dep = registry.get(path.resolve(entry.dir, specifier));
-        // A relative specifier inside a VENDOR template (a package tag
-        // importing a sibling tag from its own package) doesn't live in the
-        // project registry -- resolve it with node resolution too, scoped
-        // to the importing template's own npm package.
-        if (!dep && entry.vendor) {
-          dep = addVendorTemplate(registry, specifier, entry.markoPath, mod, entry.npmName);
-        }
-      } else {
-        // Bare specifier: `import _fancyBadge from "fancy-tags/dist/tags/
-        // fancy-badge.marko"`. Resolve it with node resolution from the
-        // FILE THAT IMPORTS IT -- for a project template that's the
-        // project's own node_modules; for a vendor template that's the
-        // package's own node_modules. We always resolve from `entry`,
-        // never from codegen's own node_modules.
-        dep = addVendorTemplate(registry, specifier, entry.markoPath, mod);
-      }
+      const dep = resolveDependency(entry, specifier);
       if (!dep) return null;
       // "same package" -- not "same source dir": a vendored package's tags
       // can live under different subdirectories (dist/tags/a/, dist/tags/b/)
@@ -388,6 +524,11 @@ export async function generateProject(root, { write = true, bestEffort = false }
       nestedStructs: entry.nestedStructs,
       resolveTag,
       resolveGlobals,
+      // FR12. Set only for a PAGE that actually has client code; the
+      // generated Go then emits its `<script type="module" src=...>` after
+      // the resume payload. A tag, or a page with no reactivity, gets
+      // undefined and emits nothing.
+      clientBundleURL: bundleURLs.get(entry.markoPath),
     });
 
     if (write) {

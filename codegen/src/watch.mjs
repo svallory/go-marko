@@ -99,10 +99,14 @@ function killGroup(child, signal) {
  *
  * @returns {Promise<boolean>} true when every template compiled
  */
-async function regenerate(dir, { log = console.log, logError = console.error } = {}) {
+async function regenerate(
+  dir,
+  { log = console.log, logError = console.error, clientOptions = {} } = {},
+) {
   const root = path.resolve(dir);
   const { goFiles, jsAssets, diagnostics } = await generateProject(root, {
     bestEffort: true,
+    ...clientOptions,
   });
   const written = [...goFiles, ...jsAssets];
 
@@ -137,11 +141,27 @@ async function regenerate(dir, { log = console.log, logError = console.error } =
  *   once chokidar has finished its initial scan and a write is guaranteed to
  *   produce an event. Only tests need this; a human is slower than the scan.
  */
-export async function watch({ dir, cmd, proxy, proxyPort = 7331, signal, onReady }) {
+export async function watch({
+  dir,
+  cmd,
+  proxy,
+  proxyPort = 7331,
+  signal,
+  onReady,
+  client = true,
+  clientDir = null,
+  clientURL,
+}) {
   const root = path.resolve(dir);
+  // FR12: client bundles rebuild with everything else. Every regenerate here
+  // is a FULL one, which is what keeps the browser half in step with the
+  // payload it has to match -- a stale bundle would reference registry ids the
+  // new payload no longer uses, and the page would render fine and be inert.
+  // The reload proxy needs no changes: it already reloads on any regenerate.
+  const clientOptions = { client, clientDir, ...(clientURL ? { clientURL } : {}) };
 
   // Initial full generate, in the same format one-shot mode prints.
-  await regenerate(root);
+  await regenerate(root, { clientOptions });
 
   const runner = cmd ? new ChildRunner(cmd, { cwd: process.cwd() }) : null;
   let hub = null;
@@ -193,7 +213,7 @@ export async function watch({ dir, cmd, proxy, proxyPort = 7331, signal, onReady
     }
     running = true;
     try {
-      const ok = await regenerate(root);
+      const ok = await regenerate(root, { clientOptions });
       if (!ok) return; // keep old binary running, keep watching
       if (runner) await runner.restart();
       if (proxy) {

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import path from "node:path";
 import { generateProject } from "./project.mjs";
+import { DEFAULT_CLIENT_URL } from "./clientbundle.mjs";
 import { UnsupportedError } from "./errors.mjs";
 
 export const USAGE = `marko-go -- compile Marko templates to Go
@@ -19,6 +20,13 @@ flags:
   --proxy=<url>           with --watch: reverse-proxy this app URL and inject
                           a live-reload script into HTML responses
   --proxy-port=<port>     port the reload proxy listens on (default 7331)
+  --client-dir=<dir>      where page client bundles are written
+                          (default <dir>/.marko-go/client)
+  --client-url=<base>     URL base the generated <script src> uses
+                          (default /.marko-go/client/)
+  --no-client             skip the browser half entirely: no bundles, and no
+                          script tag in the generated Go. A page then renders
+                          and serves normally but never hydrates.
   -h, --help              show this help
 
 examples:
@@ -31,6 +39,17 @@ examples:
 
   Then open the proxy URL (http://localhost:7331), not the app's own port --
   only the proxy serves the reload script.
+
+client bundles:
+  A PAGE -- a template no other template imports -- whose compiled client code
+  is non-empty also gets a browser bundle, and its generated Go emits a
+  <script type="module" src=...> for it. Serve the client dir from the URL
+  base with marko.ClientAssets:
+
+    mux.Handle("GET /.marko-go/client/",
+      http.StripPrefix("/.marko-go/client/", marko.ClientAssets("ui/.marko-go/client")))
+
+  A page with no reactivity ships no bundle and no script tag.
 `;
 
 /**
@@ -46,7 +65,14 @@ examples:
  *            error?: string}}
  */
 export function parseArgs(argv) {
-  const out = { watch: false, proxyPort: 7331, help: false };
+  const out = {
+    watch: false,
+    proxyPort: 7331,
+    help: false,
+    client: true,
+    clientDir: undefined,
+    clientURL: DEFAULT_CLIENT_URL,
+  };
   const positionals = [];
 
   for (let i = 0; i < argv.length; i++) {
@@ -97,6 +123,15 @@ export function parseArgs(argv) {
         }
         break;
       }
+      case "client-dir":
+        out.clientDir = takeValue();
+        break;
+      case "client-url":
+        out.clientURL = takeValue();
+        break;
+      case "no-client":
+        out.client = inlineValue === undefined ? false : inlineValue === "false";
+        break;
       default:
         out.error = `unknown flag: ${arg}`;
     }
@@ -116,6 +151,8 @@ export function parseArgs(argv) {
       out.error = `unexpected argument: ${positionals[2]}`;
     } else if (!out.watch && (out.cmd || out.proxy)) {
       out.error = "--cmd and --proxy only apply with --watch";
+    } else if (!out.client && (out.clientDir || out.clientURL !== DEFAULT_CLIENT_URL)) {
+      out.error = "--client-dir and --client-url conflict with --no-client";
     }
   }
 
@@ -134,13 +171,16 @@ export function parseArgs(argv) {
  *
  * @returns {Promise<number>} process exit code
  */
-async function generateOnce(dir) {
+async function generateOnce(dir, opts) {
   const root = path.resolve(dir);
   const { goFiles, jsAssets, diagnostics } = await generateProject(dir, {
     bestEffort: true,
+    client: opts.client,
+    clientDir: opts.clientDir ? path.resolve(opts.clientDir) : null,
+    clientURL: opts.clientURL,
   });
-  // Both output channels print the same way; jsAssets is empty until the
-  // resumability wave starts emitting client bundles (see project.mjs).
+  // Both output channels print the same way: goFiles is the Go next to each
+  // template, jsAssets the per-page browser bundles.
   const written = [...goFiles, ...jsAssets];
   for (const r of written) {
     console.log(`  ${path.relative(root, r.outPath)}`);
@@ -185,10 +225,16 @@ export async function main(argv) {
         cmd: opts.cmd,
         proxy: opts.proxy,
         proxyPort: opts.proxyPort,
+        // Client bundles regenerate with everything else -- watch mode does a
+        // full regenerate per change, so the browser half stays in step with
+        // the payload it has to match.
+        client: opts.client,
+        clientDir: opts.clientDir ? path.resolve(opts.clientDir) : null,
+        clientURL: opts.clientURL,
       });
       return 0;
     }
-    return await generateOnce(opts.dir);
+    return await generateOnce(opts.dir, opts);
   } catch (err) {
     if (err instanceof UnsupportedError) {
       console.error(`marko-go: ${err.message}`);

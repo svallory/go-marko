@@ -54,14 +54,20 @@
  * and codegen's job is only to emit the calls in the right ORDER.
  *
  *   resume  {
- *     used         boolean               did this template emit any resume Go?
- *     isPage       boolean               `_template(id, fn, 1)` -- a page root,
- *                                        and therefore the one place that
- *                                        flushes the payload.
- *     scopeVars    Map<jsName, goName>   `$scope0_id` -> `scope0_id`
- *     guardConsts  Map<jsName, number>   `$sg__input_href` -> 0
- *     registryIds  Set<string>           `_script` ids this template references
+ *     used             boolean            did this template emit any resume Go?
+ *     scopeVars        Map<jsName,goName> `$scope0_id` -> `scope0_id`
+ *     guardConsts      Map<jsName,number> `$sg__input_href` -> 0
+ *     registryIds      Set<string>        `_script` ids this template references
+ *     clientBundleURL  string|undefined   this PAGE's browser bundle
  *   }
+ *
+ * Note what is NOT here: a "this template is the page" flag. The compiler's
+ * `_template(id, fn, page)` argument cannot answer that -- it marks every
+ * non-embedded template, so it cannot tell a page apart from a tag it calls.
+ * The two consumers resolve it differently and correctly: payload flushing is
+ * decided at RUNTIME by the Writer's render depth (the outermost render is the
+ * document), and client bundling is decided by project.mjs from the import
+ * graph (an entry point is a template no other template imports).
  *
  * `scopeVars` and `guardConsts` are per-BODY in the JS but flat here: the
  * compiler's names are unique within a module (`$scope0_id`, `$scope1_id`, ...),
@@ -86,6 +92,7 @@ export function createContext(opts) {
     nestedStructs = [],
     resolveTag = () => null,
     resolveGlobals = () => null,
+    clientBundleURL = undefined,
   } = opts;
 
   return {
@@ -137,24 +144,19 @@ export function createContext(opts) {
     // --- resumability (FR12 wave 1). See the header comment + resume.mjs ---
     resume: {
       used: false,
-      isPage: false,
       scopeVars: new Map(),
       guardConsts: new Map(),
       registryIds: new Set(),
+      /**
+       * URL of this PAGE's browser bundle, or undefined.
+       *
+       * Set by project.mjs only for an entry-point template whose dom compile
+       * actually registers client code. The generated Go emits
+       * `w.ClientBundle(url)`, and the Writer writes the module script AFTER
+       * the resume payload -- the order a stock Marko app boots in, since
+       * init() needs M._.r to already exist.
+       */
+      clientBundleURL,
     },
   };
-}
-
-/**
- * Does this template's generated Go need to flush a resume payload?
- *
- * Only a PAGE root does. A called template contributes markers, scopes and
- * script entries to the SAME Writer, and the page root flushes them all once
- * at the end; a callee that flushed would emit the payload mid-document, before
- * its own siblings had contributed. `isPage` comes from the compiler's own
- * signal -- the third argument to `_template(id, renderer, page)` -- rather
- * than from a heuristic about `<html>` roots.
- */
-export function needsResumeFlush(ctx) {
-  return ctx.resume.isPage;
 }

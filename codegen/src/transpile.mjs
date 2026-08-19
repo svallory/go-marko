@@ -54,6 +54,9 @@ export { alignKeyValueRuns };
  *        the project's generated Globals type (FR10), or null when the
  *        project declares no `Marko.Global`. Only consulted when the template
  *        actually reads `$global`.
+ * @param {string} [opts.clientBundleURL] URL of this page's browser bundle
+ *        (FR12). Set only for an entry-point template that has client code;
+ *        the generated Go then emits the module script after the payload.
  * @returns {{code: string, imports: string[]}} Go source + import paths used
  */
 export function transpile(jsSource, opts) {
@@ -159,13 +162,14 @@ function hoistModuleConstNames(ctx, ast) {
 
 /**
  * Find `export default _template(id, renderer, page?)` and validate the
- * renderer's shape. Records the renderer's input parameter name on ctx, and
- * whether this template is a PAGE.
+ * renderer's shape. Records the renderer's input parameter name on ctx.
  *
- * The `page` argument is the compiler's own page/embedded signal (it is what
- * decides whether the render gets the deterministic `"_"` render id or a
- * random one -- see the wire contract sec 2). FR12 uses it for the one thing
- * that must happen exactly once per document: flushing the resume payload.
+ * The third `page` argument is deliberately IGNORED. It looks like a
+ * page/tag discriminator and is not one: @marko/compiler sets it on every
+ * non-embedded template, so a layout, a button and a page all carry it. What
+ * it really controls is whether the render gets the deterministic `"_"` render
+ * id or a random one (wire contract sec 2). Both things FR12 needs a real
+ * page/tag answer for get it elsewhere -- see ctx.mjs's resume section.
  */
 function findRenderer(ctx, ast) {
   const exportDefault = ast.program.body.find((n) => t.isExportDefaultDeclaration(n));
@@ -175,8 +179,7 @@ function findRenderer(ctx, ast) {
       exportDefault,
     );
   }
-  const [, renderer, page] = exportDefault.declaration.arguments;
-  ctx.resume.isPage = Boolean(page && t.isNumericLiteral(page) && page.value !== 0);
+  const [, renderer] = exportDefault.declaration.arguments;
   if (!(t.isArrowFunctionExpression(renderer) || t.isFunctionExpression(renderer))) {
     throw new UnsupportedError("template renderer is not a function", renderer);
   }

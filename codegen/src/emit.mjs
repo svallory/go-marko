@@ -109,6 +109,13 @@ export function assembleFile(ctx, { moduleConstDecls, bodyGo }) {
     `func ${ctx.pascalName}(w *runtime.Writer, input ${ctx.structName}) {`,
     indent([
       "w.BeginTemplate()",
+      // FR12. A PAGE with client code names its bundle here; the Writer emits
+      // the module script after the resume payload, because init() needs
+      // M._.r to exist. Declared at the TOP so it survives an early return
+      // once the renderer grows any.
+      ...(ctx.resume.clientBundleURL
+        ? [`w.ClientBundle(${goStringLiteral(ctx.resume.clientBundleURL)})`]
+        : []),
       ...dropUnusedScopeVars(ctx, bodyGo),
       `w.EndTemplate(${goStringLiteral(`${ctx.templateName}.marko`)})`,
     ]),
