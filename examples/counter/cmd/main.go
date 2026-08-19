@@ -14,7 +14,7 @@ import (
 	"sync"
 
 	"github.com/svallory/go-marko/runtime"
-	views "github.com/svallory/go-marko/examples/counter"
+	counter "github.com/svallory/go-marko/examples/counter"
 )
 
 var (
@@ -51,11 +51,11 @@ func handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mu.Lock()
-	input := views.Input{Global: globalCount, User: userCounts[id]}
+	input := counter.CounterInput{Global: float64(globalCount), User: float64(userCounts[id])}
 	mu.Unlock()
 
 	out := runtime.New()
-	views.Render(out, input)
+	counter.Counter(out, input)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write([]byte(out.String()))
 }
