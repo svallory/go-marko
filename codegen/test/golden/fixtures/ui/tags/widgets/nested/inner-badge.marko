@@ -1,0 +1,7 @@
+// A custom tag nested one directory below its group (ui/tags/widgets/), to
+// exercise cross-directory + grouping-folder tag resolution.
+export interface Input {
+  text: string;
+}
+
+<span class="inner-badge">${input.text}</span>

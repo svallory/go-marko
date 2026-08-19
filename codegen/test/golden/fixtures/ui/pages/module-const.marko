@@ -1,0 +1,10 @@
+export interface Input {
+  variant: "default" | "outline";
+}
+
+static const variants = {
+  default: "btn-default",
+  outline: "btn-outline",
+};
+
+<button class=variants[input.variant]>Click</button>

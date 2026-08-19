@@ -1,0 +1,9 @@
+// Callee for the attrs-spread fixture: extra HTML attrs pass through.
+export interface Input {
+  attrs?: Marko.HTMLAttributes;
+  content?: Marko.Body;
+}
+
+<div class="panel" ...input.attrs>
+  <${input.content}/>
+</div>

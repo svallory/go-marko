@@ -1,0 +1,10 @@
+export interface Input {
+  loggedIn: boolean;
+}
+
+<if=input.loggedIn>
+  <p>Welcome back.</p>
+</if>
+<else>
+  <p>Please log in.</p>
+</else>

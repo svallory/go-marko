@@ -1,0 +1,10 @@
+// Exercises @head attr-tag caller+callee and Marko.Body content, composed
+// through a cross-directory custom tag (ui/tags/layouts/page-layout.marko).
+export interface Input {}
+
+<page-layout title="Composed">
+  <@head>
+    <meta name="description" content="golden fixture">
+  </@head>
+  <p>page body</p>
+</page-layout>

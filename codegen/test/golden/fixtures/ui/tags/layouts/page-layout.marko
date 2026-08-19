@@ -1,0 +1,21 @@
+// Base layout used by the composed-page fixture: caller-supplied @head
+// content plus a Marko.Body slot for the page's own markup.
+export interface Input {
+  title?: string;
+  head?: Marko.AttrTag<{ content: Marko.Body }>;
+  content: Marko.Body;
+}
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <title>${input.title ?? "goldenfix"}</title>
+    <if=input.head>
+      <${input.head.content}/>
+    </if>
+  </head>
+  <body>
+    <${input.content}/>
+  </body>
+</html>
