@@ -33,6 +33,11 @@ func isFalsy(val any) bool {
 	switch v := val.(type) {
 	case nil:
 		return true
+	case undefinedType:
+		// JS `undefined` is falsy. It reaches here from runtime.Absent, which
+		// is how an omitted optional input field is distinguished from a
+		// deliberate zero value on the wire.
+		return true
 	case bool:
 		return !v
 	case string:
@@ -155,4 +160,37 @@ func toJSString(val any) string {
 	default:
 		return fmt.Sprintf("%v", v)
 	}
+}
+
+// Absent maps a Go zero value back to JS `undefined`.
+//
+// Go has no "unset" for a scalar struct field, so marko-go's generated Input
+// structs use the zero value to mean "attribute not passed" (see the codegen's
+// inputstruct notes). That works for rendering decisions, but it is NOT what
+// the wire says: Marko receives `undefined` for an omitted attribute and drops
+// it from both the markup and the resume payload, while a real empty string
+// renders as a bare attribute (` target`) and serializes as `""`.
+//
+// Generated code therefore wraps every read of an OPTIONAL scalar input field
+// in Absent, which returns:
+//
+//	Undefined  when v is the zero value ("" / 0 / false / nil)
+//	v          otherwise
+//
+// Attr and Attrs treat Undefined as void, and the resume serializer drops it in
+// object position and writes the positional `$` hole in array position -- which
+// is exactly what JS does with `undefined` in each of those places.
+//
+// The cost is the documented flip side of the zero-value convention: a template
+// that deliberately passes `target=""` is indistinguishable from one that omits
+// it. That trade is already made by the Input struct shape; Absent only makes
+// the two ends agree about which side of it we are on.
+func Absent(v any) any {
+	// isFalsy is exactly "is the Go zero value" for every scalar the Input
+	// structs can hold, plus nil-ness for pointers/maps/slices -- which is the
+	// same test the zero-value convention already uses everywhere else.
+	if isFalsy(v) {
+		return Undefined
+	}
+	return v
 }

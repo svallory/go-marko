@@ -27,6 +27,10 @@ type Writer struct {
 	// trailers buffers markup that must land AFTER the resume payload
 	// script -- the closing `</body></html>`. See Writer.Trailer.
 	trailers strings.Builder
+
+	// renderDepth counts active template renders, so only the outermost one
+	// flushes the resume payload. See Writer.BeginTemplate.
+	renderDepth int
 }
 
 // errInvalidResumeID is returned by FlushResume when SetResumeIDs was given a

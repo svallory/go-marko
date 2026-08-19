@@ -45,6 +45,9 @@ type resumeState struct {
 	// replaced when the same id is written more than once.
 	writeScopes map[int]*ScopeState
 
+	// nextScopeID is the render's scope-id allocator. 1-based: 0 is $global.
+	nextScopeID int
+
 	// effects is the script-entry token stream; lastEffect tracks the
 	// current registry id so consecutive entries with the same id collapse.
 	effects      string
@@ -52,8 +55,30 @@ type resumeState struct {
 	hasEffect    bool
 	needsRuntime bool
 
+	// clientBundle is the URL of this page's browser bundle, emitted as a
+	// module script AFTER the payload script and BEFORE the trailers. See
+	// Writer.ClientBundle.
+	clientBundle string
+
 	ser *serializer
 	err error
+}
+
+// ClientBundle names the browser bundle for this page. FlushResume emits it as
+//
+//	<script type="module" src="URL"></script>
+//
+// immediately AFTER the resume payload script and BEFORE the trailers, which
+// is the order a stock Marko app boots in: the payload defines M._.r and calls
+// M._.w() synchronously, then the deferred module executes init() against the
+// state that is already there.
+//
+// Generated code calls this only for PAGE templates that actually compile to
+// non-empty dom output; a page with no reactivity ships no bundle.
+//
+// Resume support; generated code only; not stable.
+func (w *Writer) ClientBundle(url string) {
+	w.resume().clientBundle = url
 }
 
 func newResumeState() *resumeState {
@@ -61,6 +86,7 @@ func newResumeState() *resumeState {
 		runtimeID:   DefaultRuntimeID,
 		renderID:    DefaultRenderID,
 		writeScopes: map[int]*ScopeState{},
+		nextScopeID: 1,
 		ser:         newSerializer(),
 	}
 }
@@ -93,6 +119,46 @@ func (w *Writer) resume() *resumeState {
 		w.res = newResumeState()
 	}
 	return w.res
+}
+
+// AllocScopeID allocates the next scope id for this render, mirroring the JS
+// `_scope_id()` intrinsic (a post-increment of a per-render counter).
+//
+// Ids are 1-BASED -- 0 is reserved for $global -- and allocation ORDER is part
+// of the wire format, because the ids appear in markers, in scope references
+// and in the ascending delta encoding of the payload. Generated code must
+// therefore call this exactly where the compiled JS calls `_scope_id()`,
+// including inside body closures and conditional branches: allocation order is
+// render order, not source order.
+//
+// Resume support; generated code only; not stable.
+func (w *Writer) AllocScopeID() int {
+	r := w.resume()
+	id := r.nextScopeID
+	r.nextScopeID++
+	return id
+}
+
+// PeekScopeID returns the id AllocScopeID would hand out next, without
+// consuming it. Mirrors the JS `_peek_scope_id()` intrinsic, which the
+// compiler uses to name a child scope that a callee is about to allocate.
+//
+// Resume support; generated code only; not stable.
+func (w *Writer) PeekScopeID() int {
+	return w.resume().nextScopeID
+}
+
+// TouchScope records that a scope EXISTS without giving it any state, mirroring
+// the JS `_existing_scope(id)` intrinsic (`writeScope(id, {})`).
+//
+// A scope with no properties is skipped by the serializer, so on its own this
+// writes nothing to the payload -- but a later AddScope for the same id merges
+// into it, and it marks the render as needing the resume runtime.
+//
+// Resume support; generated code only; not stable.
+func (w *Writer) TouchScope(id int) ScopeRef {
+	w.AddScope(id, NewScopeState())
+	return ScopeRef{ID: id}
 }
 
 // AddScope records serialized state for a scope id. Repeated calls for the
@@ -167,13 +233,32 @@ func (w *Writer) Trailer(s string) {
 	w.trailers.WriteString(s)
 }
 
-// FlushResume writes the resume payload script into the output stream and
-// then appends any buffered trailer markup, completing the render.
+// BeginTemplate marks the start of one template's render. Generated code emits
+// it as the first statement of every render function, paired with FlushResume
+// as the last.
 //
-// This is the Phase C integration point. Generated code -- or marko.Handler
-// on its behalf -- must call it exactly once, after the last markup write:
+// It exists because "which template flushes the resume payload?" is a RUNTIME
+// question, not a compile-time one. Marko's compiler marks every non-embedded
+// template `page` (the third argument to `_template`), so that flag cannot tell
+// a page apart from a tag it calls -- in JS the distinction is simply which
+// template `.render()` was invoked on. The Go analogue is depth: the outermost
+// active render is the document, and it is the one that flushes.
+//
+// Resume support; generated code only; not stable.
+func (w *Writer) BeginTemplate() {
+	w.renderDepth++
+}
+
+// FlushResume closes one template's render. On the OUTERMOST call it writes the
+// resume payload script, then the client bundle script, then any buffered
+// trailer markup, completing the document; a nested call only decrements the
+// depth and does nothing else, so a tag can never emit a payload mid-document.
+//
+// Generated code emits it as the last statement of every render function,
+// paired with BeginTemplate as the first:
 //
 //	func Page(w *runtime.Writer, input PageInput) {
+//	    w.BeginTemplate()
 //	    w.HTML("<html><body>...")
 //	    w.Marker(runtime.OpResume, 1, "a")
 //	    w.AddScope(1, runtime.ScopeStateOf("c", 0))
@@ -191,6 +276,12 @@ func (w *Writer) Trailer(s string) {
 //
 // Resume support; generated code only; not stable.
 func (w *Writer) FlushResume() error {
+	if w.renderDepth > 0 {
+		w.renderDepth--
+		if w.renderDepth > 0 {
+			return nil
+		}
+	}
 	if w.res == nil {
 		w.flushTrailers()
 		return nil
@@ -209,8 +300,41 @@ func (w *Writer) FlushResume() error {
 		w.sb.WriteString(scripts)
 		w.sb.WriteString("</script>")
 	}
+	// The browser bundle loads AFTER the payload: init() needs M._.r to
+	// already exist. Emitted only when a bundle was named -- a page with no
+	// client code, and every byte-oracle comparison, sees nothing here.
+	if r.clientBundle != "" {
+		w.sb.WriteString(`<script type="module" src="`)
+		w.sb.WriteString(EscapeAttr(r.clientBundle))
+		w.sb.WriteString(`"></script>`)
+	}
 	w.flushTrailers()
 	return nil
+}
+
+// EndTemplate is FlushResume for generated code, which has no way to return an
+// error: render functions are `func(*Writer, Input)`, deliberately, so a
+// template call reads like a statement.
+//
+// On a serialization failure it PANICS, naming the template. That is the loud
+// end of the spectrum on purpose: the alternative -- swallowing the error --
+// ships a page whose HTML looks right and whose interactivity is silently dead,
+// which is the worst possible failure mode for a resumability feature. A
+// panic surfaces in the http handler's recover, in tests, and in dev, and the
+// only way to reach one is a value type the payload cannot express (an
+// unsupported Go type in `<let>` state, or a cycle), which is a template bug.
+//
+// OPEN QUESTION for the error-model review: render functions returning an
+// error, or an error accumulated on the Writer and surfaced by String(), would
+// both be less violent. Neither fits the current `func(*Writer, Input)` shape,
+// so this is deliberately a placeholder with a loud failure rather than a
+// quiet one. See the Phase C report.
+//
+// Resume support; generated code only; not stable.
+func (w *Writer) EndTemplate(templateName string) {
+	if err := w.FlushResume(); err != nil {
+		panic("marko-go: rendering " + templateName + ": " + err.Error())
+	}
 }
 
 func (w *Writer) flushTrailers() {

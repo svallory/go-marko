@@ -212,6 +212,11 @@ func isVoidAttr(value any) bool {
 	if value == nil {
 		return true
 	}
+	// `undefined` is `== null` in JS, so it is void here too. This is what an
+	// omitted optional attribute reaches us as; see runtime.Absent.
+	if _, ok := value.(undefinedType); ok {
+		return true
+	}
 	if b, ok := value.(bool); ok {
 		return !b
 	}
