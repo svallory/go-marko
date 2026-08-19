@@ -159,7 +159,13 @@ function hoistModuleConstNames(ctx, ast) {
 
 /**
  * Find `export default _template(id, renderer, page?)` and validate the
- * renderer's shape. Records the renderer's input parameter name on ctx.
+ * renderer's shape. Records the renderer's input parameter name on ctx, and
+ * whether this template is a PAGE.
+ *
+ * The `page` argument is the compiler's own page/embedded signal (it is what
+ * decides whether the render gets the deterministic `"_"` render id or a
+ * random one -- see the wire contract sec 2). FR12 uses it for the one thing
+ * that must happen exactly once per document: flushing the resume payload.
  */
 function findRenderer(ctx, ast) {
   const exportDefault = ast.program.body.find((n) => t.isExportDefaultDeclaration(n));
@@ -169,7 +175,8 @@ function findRenderer(ctx, ast) {
       exportDefault,
     );
   }
-  const [, renderer] = exportDefault.declaration.arguments;
+  const [, renderer, page] = exportDefault.declaration.arguments;
+  ctx.resume.isPage = Boolean(page && t.isNumericLiteral(page) && page.value !== 0);
   if (!(t.isArrowFunctionExpression(renderer) || t.isFunctionExpression(renderer))) {
     throw new UnsupportedError("template renderer is not a function", renderer);
   }

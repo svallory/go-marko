@@ -41,38 +41,32 @@
  *   globalsBinding  string|null   local name bound to `_$global()`, once seen
  *   globalsEntry    object|null   resolved Globals type, memoized on first use
  *
- * ### RESERVED -- resumability (FR12). Declared, not implemented.
+ * ### Resumability (FR12 wave 1). See resume.mjs.
  *
- * These three fields are the extension point the whole split exists for. See
- * notes/fr12-resume-findings.md §4/§5/§7. They are initialized to their empty
- * value so a translator can start using one without touching this file's
- * shape, and so `ctx` never gains a field by accident mid-run.
+ * The design this section originally RESERVED assumed the payload was built at
+ * transpile time -- a `scopeIds` allocator and a `serialized` accumulator
+ * living on `ctx`. That turned out to be the wrong shape, and the reason is
+ * worth keeping: scope ids and serialized values are per-RENDER runtime
+ * quantities. `_scope_id()` post-increments a counter as the render walks the
+ * tree, so a body closure's ids depend on WHERE THE CALLEE RENDERS IT, which no
+ * amount of transpile-time analysis can know. The accumulators therefore live
+ * on the Go `runtime.Writer` (AllocScopeID / AddScope / AddScript / Marker),
+ * and codegen's job is only to emit the calls in the right ORDER.
  *
- *   scopeIds  {next: number, alloc(): number}
- *       Per-render scope-id allocator. The JS runtime's ids are **1-based**
- *       (findings §2: an off-by-one here was one of two bugs the byte-oracle
- *       caught), so `next` starts at 1 and `alloc()` post-increments.
- *       Consumed by `_scope_id`, `_scope`, `_el_resume`, `_scope_with_id`.
+ *   resume  {
+ *     used         boolean               did this template emit any resume Go?
+ *     isPage       boolean               `_template(id, fn, 1)` -- a page root,
+ *                                        and therefore the one place that
+ *                                        flushes the payload.
+ *     scopeVars    Map<jsName, goName>   `$scope0_id` -> `scope0_id`
+ *     guardConsts  Map<jsName, number>   `$sg__input_href` -> 0
+ *     registryIds  Set<string>           `_script` ids this template references
+ *   }
  *
- *   serialized  {values: any[], byRef: Map<object, number>, add(v): number}
- *       Accumulator for the resume payload. Marko's serializer is
- *       REFERENCE-IDENTITY deduped -- the same object appearing twice must
- *       serialize once and be back-referenced -- so `byRef` is keyed by object
- *       identity (a Map, never a string key) and `add` returns the existing
- *       index on a repeat. Consumed by `_scope`.
- *
- *   channels  {html: null, resume: string[]}
- *       Secondary output channels beside the `w.HTML` stream. `html` is a
- *       placeholder for symmetry (the primary stream is emitted inline as
- *       `w.HTML(...)` statements today and stays that way). `resume` collects
- *       the statements that must be written AFTER all HTML, in the JS
- *       runtime's fixed order: **scopes first, then scripts** (findings §2 --
- *       the other bug the byte-oracle caught). `_script` appends here; the
- *       flush point is the end of the renderer body in emit.mjs.
- *
- * Nothing reads these today. `emit.mjs` asserts they are empty before
- * assembling a file, so the first translator that starts filling one and
- * forgets to flush it fails loudly instead of silently dropping the payload.
+ * `scopeVars` and `guardConsts` are per-BODY in the JS but flat here: the
+ * compiler's names are unique within a module (`$scope0_id`, `$scope1_id`, ...),
+ * so one table cannot collide, and a flat table means a nested body closure can
+ * still resolve a scope id bound by its enclosing template.
  */
 
 import { camelCase } from "./names.mjs";
@@ -105,6 +99,18 @@ export function createContext(opts) {
     // --- type information -------------------------------------------------
     inputFields,
     inputFieldTypes: new Map(inputFields.map((f) => [f.name, f.goType])),
+    /**
+     * Go field names of the input fields declared `field?:`. Go has no "unset"
+     * for a scalar struct field -- the zero value stands in for absent (see
+     * inputstruct.mjs) -- but the WIRE distinguishes them: JS receives
+     * `undefined` for an omitted attribute and Marko drops it from both the
+     * markup and the resume payload, whereas `""` renders as a bare attribute
+     * and serializes as `""`. This set is what lets an optional scalar read be
+     * translated back into `undefined`. See expr.mjs's absentIfZero.
+     */
+    optionalInputFields: new Set(
+      inputFields.filter((f) => f.optional).map((f) => f.name),
+    ),
     nestedStructs,
     /** Go struct name -> Map(goFieldName -> goType), for nested Input structs. */
     structFieldTypes: new Map(
@@ -128,39 +134,27 @@ export function createContext(opts) {
     globalsBinding: null,
     globalsEntry: null,
 
-    // --- RESERVED: resumability (FR12). See the header comment. -----------
-    scopeIds: {
-      next: 1, // 1-based; see findings §2
-      alloc() {
-        return this.next++;
-      },
-    },
-    serialized: {
-      values: [],
-      /** Reference identity, NOT structural -- Marko dedupes by identity. */
-      byRef: new Map(),
-      add(value) {
-        const seen = this.byRef.get(value);
-        if (seen !== undefined) return seen;
-        const index = this.values.length;
-        this.values.push(value);
-        if (value !== null && typeof value === "object") this.byRef.set(value, index);
-        return index;
-      },
-    },
-    channels: {
-      html: null, // the primary w.HTML stream is emitted inline
-      resume: [], // ordered scopes-then-scripts, flushed after all HTML
+    // --- resumability (FR12 wave 1). See the header comment + resume.mjs ---
+    resume: {
+      used: false,
+      isPage: false,
+      scopeVars: new Map(),
+      guardConsts: new Map(),
+      registryIds: new Set(),
     },
   };
 }
 
 /**
- * True when nothing has been written to a reserved resume channel. emit.mjs
- * checks this before assembling a file: once a translator starts producing
- * resume output, it must also arrange for it to be flushed, and a silent drop
- * would be invisible in the generated Go.
+ * Does this template's generated Go need to flush a resume payload?
+ *
+ * Only a PAGE root does. A called template contributes markers, scopes and
+ * script entries to the SAME Writer, and the page root flushes them all once
+ * at the end; a callee that flushed would emit the payload mid-document, before
+ * its own siblings had contributed. `isPage` comes from the compiler's own
+ * signal -- the third argument to `_template(id, renderer, page)` -- rather
+ * than from a heuristic about `<html>` roots.
  */
-export function resumeChannelsEmpty(ctx) {
-  return ctx.channels.resume.length === 0 && ctx.serialized.values.length === 0;
+export function needsResumeFlush(ctx) {
+  return ctx.resume.isPage;
 }

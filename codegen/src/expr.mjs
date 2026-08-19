@@ -17,6 +17,14 @@ import { capitalize, goStringLiteral } from "./names.mjs";
 import { goFieldName } from "./inputstruct.mjs";
 import { indent } from "./emit.mjs";
 import {
+  elResumeStatement,
+  guardAllowsEmit,
+  isDisabledGuardedStatement,
+  recordGuardConst,
+  translatePeekScopeIdDecl,
+  translateScopeIdDecl,
+} from "./resume.mjs";
+import {
   GLOBALS_VAR,
   inferGoType,
   isBooleanShaped,
@@ -100,7 +108,15 @@ export function translateExpr(ctx, node) {
     // Element type is unknown from JS alone -- see the []any contract
     // for Input slice fields in PLAN.md. runtime.AttrClass accepts
     // []any, which is what makes `class=[a, b, c]` work.
-    return `[]any{${node.elements.map((e) => translateExpr(ctx, e)).join(", ")}}`;
+    //
+    // Elements are `any`, so an optional field read is wrapped here rather
+    // than at each use site: a `<const/classes=[...]>` array feeds BOTH
+    // `class=` rendering (where an unset entry must be skipped) and the resume
+    // payload (where it must become the positional `$` hole). Both readings
+    // follow from the element being `undefined`, and neither does from `""`.
+    return `[]any{${node.elements
+      .map((e) => absentIfZero(ctx, e, translateExpr(ctx, e)))
+      .join(", ")}}`;
   }
   if (t.isObjectExpression(node)) {
     return translateObjectAsMap(ctx, node);
@@ -214,8 +230,14 @@ export function translateTest(ctx, node) {
  * `_html(arg)` -> one or more `w.HTML(...)` statements. `arg` is either a
  * plain string (static markup) or a template literal mixing static text with
  * dynamic interpolations. Each interpolation is dispatched through
- * HTML_PART_INTRINSICS; resume-only markers (`_el_resume`, `_sep`,
- * `_attr_nonce`) are dropped.
+ * HTML_PART_INTRINSICS, with two special cases:
+ *
+ *   `_el_resume`  becomes a `w.Marker(...)` STATEMENT rather than a string
+ *                 expression (see resume.mjs), or nothing when its guard is
+ *                 off.
+ *   `_sep`        stays dropped, but only while it is guarded off -- an
+ *                 unguarded one would be a real byte divergence, so it fails
+ *                 loudly instead.
  */
 export function translateHtmlCall(ctx, node) {
   // Deferred import avoids touching the cyclic module's exports at init time.
@@ -231,11 +253,25 @@ export function translateHtmlCall(ctx, node) {
       const expr = arg.expressions[i];
       if (expr === undefined) return;
       const intrinsic = calleeIntrinsic(ctx, expr);
+      if (intrinsic === "_el_resume") {
+        const stmt = elResumeStatement(ctx, expr);
+        if (stmt) out.push(stmt);
+        return;
+      }
+      if (intrinsic === "_sep") {
+        if (guardAllowsEmit(ctx, expr.arguments[0])) {
+          throw new UnsupportedError(
+            "an unguarded _sep() separator is not supported yet -- it writes `<!>` into the byte stream, and nothing in the wave-1 subset should reach one",
+            expr,
+          );
+        }
+        return;
+      }
       const handler = intrinsic && HTML_PART_INTRINSICS[intrinsic];
       if (handler) {
         out.push(`w.HTML(${handler.translate(ctx, expr)})`);
       } else if (intrinsic && RESUME_ONLY.has(intrinsic)) {
-        // resumability marker -- contributes nothing to a fresh mount
+        // resume bookkeeping with no byte-stream contribution
       } else {
         throw new UnsupportedError(
           "unsupported expression inside _html template literal",
@@ -284,7 +320,11 @@ export function translateAttrs(ctx, node) {
         : null;
     if (key === null) throw new UnsupportedError("unsupported _attrs key", prop.key);
     items.push(
-      `runtime.A{Name: ${goStringLiteral(key)}, Value: ${translateExpr(ctx, prop.value)}}`,
+      `runtime.A{Name: ${goStringLiteral(key)}, Value: ${absentIfZero(
+        ctx,
+        prop.value,
+        translateExpr(ctx, prop.value),
+      )}}`,
     );
   }
   return `runtime.Attrs(${items.join(", ")})`;
@@ -576,6 +616,33 @@ export function translateDynamicTag(ctx, node) {
   return `if ${ref} != nil {\n\t${ref}(w)\n}`;
 }
 
+/**
+ * A read of an OPTIONAL scalar input field, translated so an unset field
+ * reaches the wire as `undefined` rather than as its Go zero value.
+ *
+ * Only applied where the difference is OBSERVABLE -- attribute values and
+ * resume-payload values -- never to a read feeding Go logic, where `any` would
+ * break the types. `<if=input.href>` still tests the plain string, and
+ * `runtime.Or(input.Variant, "default")` still gets a string.
+ *
+ * Optional COMPOSITE fields are left alone: their Go representation is already
+ * nil-able (a nil map, slice or pointer), which the runtime and the serializer
+ * both already read as absent, so wrapping them would only add noise.
+ */
+export function absentIfZero(ctx, node, go) {
+  if (!t.isMemberExpression(node) || node.computed || !t.isIdentifier(node.property)) {
+    return go;
+  }
+  if (!t.isIdentifier(node.object) || node.object.name !== ctx.inputParamName) return go;
+  const field = capitalize(node.property.name);
+  if (!ctx.optionalInputFields.has(field)) return go;
+  const type = ctx.inputFieldTypes.get(field);
+  if (type !== "string" && type !== "bool" && type !== "float64" && type !== "int") {
+    return go;
+  }
+  return `runtime.Absent(${go})`;
+}
+
 /** `input.content` / `input.head.content` -- a dotted chain rooted at input. */
 export function isMemberChainFromInput(ctx, node) {
   let cur = node;
@@ -611,6 +678,22 @@ export function translateStatement(ctx, node) {
   if (t.isVariableDeclaration(node)) {
     const lines = [];
     for (const decl of node.declarations) {
+      // FR12. `const $scope0_id = _scope_id()` binds a per-render scope id;
+      // `const $childScope = _peek_scope_id()` reads the next one without
+      // consuming it. Both become real Go variables -- see resume.mjs on why
+      // these cannot be transpile-time constants.
+      const scopeInit = calleeIntrinsic(ctx, decl.init);
+      if (scopeInit === "_scope_id") {
+        lines.push(translateScopeIdDecl(ctx, decl));
+        continue;
+      }
+      if (scopeInit === "_peek_scope_id") {
+        lines.push(translatePeekScopeIdDecl(ctx, decl));
+        continue;
+      }
+      // `const $scope0_reason = _scope_reason(), $sg__x = _serialize_guard(...)`
+      // -- guard bindings are folded to constants, not emitted.
+      if (decl.init && recordGuardConst(ctx, decl)) continue;
       if (decl.init && isResumeOnlyCall(ctx, decl.init)) continue; // dropped
       // `const $input_events__closures = new Set();` -- the compiler's
       // per-signal closure registry. It exists only so `_subscribe` can
@@ -659,12 +742,19 @@ export function translateStatement(ctx, node) {
     const out = [];
     for (const expr of exprs) {
       if (isResumeOnlyCall(ctx, expr)) continue;
-      if (
-        t.isLogicalExpression(expr) &&
-        expr.operator === "&&" &&
-        isResumeOnlyCall(ctx, expr.right)
-      ) {
-        continue; // `(guard) && _scope(...)` -- resumability bookkeeping
+      if (t.isLogicalExpression(expr) && expr.operator === "&&") {
+        // `(guard) && <call>`. Two ways this drops:
+        //
+        //  1. the RIGHT side is dropped anyway (`_subscribe`, ...), so the
+        //     guard's value cannot matter;
+        //  2. the guard itself is statically off, which in wave 1 every
+        //     serialize guard is -- matching JS, where `_serialize_if`
+        //     returns undefined and `&&` short-circuits before the call runs.
+        //
+        // Anything else falls through to normal dispatch, which fails loudly
+        // rather than silently dropping a resume payload.
+        if (isResumeOnlyCall(ctx, expr.right)) continue;
+        if (isDisabledGuardedStatement(ctx, expr)) continue;
       }
       const intrinsic = calleeIntrinsic(ctx, expr);
       const handler = intrinsic

@@ -3,13 +3,14 @@
  * block, and the generated file's skeleton.
  *
  * Everything here is string-level -- no AST, no Marko knowledge. That is the
- * point of the split: a future resume translator emits statement STRINGS into
- * a channel on `ctx` (see ctx.mjs) and this module decides where in the file
- * they land, without either side knowing the other's internals.
+ * point of the split: the resume translators (resume.mjs) emit statement
+ * STRINGS and this module decides where in the file they land, without either
+ * side knowing the other's internals.
  */
 
 import { renderInputStruct } from "./inputstruct.mjs";
-import { resumeChannelsEmpty } from "./ctx.mjs";
+import { goStringLiteral } from "./names.mjs";
+import { dropUnusedScopeVars } from "./resume.mjs";
 
 /** Prefix every line of every entry with one tab, preserving blank lines. */
 export function indent(lines) {
@@ -75,16 +76,6 @@ export function buildImportBlock(ctx) {
  * @returns {{code: string, imports: string[]}}
  */
 export function assembleFile(ctx, { moduleConstDecls, bodyGo }) {
-  // FR12 guard. The reserved resume channels (ctx.channels.resume,
-  // ctx.serialized) have no flush point yet -- the first translator that
-  // starts filling one must add it here, and silently dropping a resume
-  // payload would be invisible in the generated Go. Fail loudly instead.
-  if (!resumeChannelsEmpty(ctx)) {
-    throw new Error(
-      "internal: resume channels are non-empty but emit.mjs has no flush point yet -- see ctx.mjs's RESERVED section",
-    );
-  }
-
   const { block: importBlock, paths } = buildImportBlock(ctx);
 
   const parts = [
@@ -107,10 +98,20 @@ export function assembleFile(ctx, { moduleConstDecls, bodyGo }) {
   for (const s of ctx.nestedStructs) {
     parts.push(renderInputStruct(s.name, s.fields), "");
   }
+  // FR12. Every render function is bracketed by BeginTemplate/EndTemplate,
+  // not just the ones that emit resume state. The pair maintains the Writer's
+  // render DEPTH, and depth is what decides which render flushes the resume
+  // payload -- so a tag that contributes nothing itself still has to be
+  // counted, or a page calling it would flush too early. See
+  // runtime.Writer.BeginTemplate.
   parts.push(
     `// ${ctx.pascalName} renders the ${ctx.templateName}.marko template into w.`,
     `func ${ctx.pascalName}(w *runtime.Writer, input ${ctx.structName}) {`,
-    indent(bodyGo),
+    indent([
+      "w.BeginTemplate()",
+      ...dropUnusedScopeVars(ctx, bodyGo),
+      `w.EndTemplate(${goStringLiteral(`${ctx.templateName}.marko`)})`,
+    ]),
     "}",
     "",
   );

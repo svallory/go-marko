@@ -36,6 +36,12 @@ import {
   translateIfWrapper,
   translateTagCall,
 } from "./expr.mjs";
+import {
+  translateResumeBranch,
+  translateScope,
+  translateScript,
+  translateTrailers,
+} from "./resume.mjs";
 
 /**
  * Intrinsics whose entire purpose is resumability/scope-tracking bookkeeping.
@@ -47,25 +53,33 @@ import {
  * See notes/fr12-resume-findings.md §5 for the per-intrinsic mapping.
  */
 export const RESUME_ONLY = new Set([
+  // Guard primitives. Still "dropped", but not blindly: resume.mjs evaluates
+  // them to their wave-1 constant (always 0 -- see its module header) and uses
+  // that to decide whether the marker/scope they gate is emitted at all. A
+  // guard expression the evaluator does not recognize is a hard error, so a
+  // future non-zero reason cannot slip through as a silent drop.
   "_scope_reason",
   "_serialize_guard",
   "_serialize_if",
+  // Deposits a reason for the callee. Since every value it can deposit is
+  // itself a guard (i.e. 0) in wave 1, the deposit is a no-op.
   "_set_serialize_reason",
-  "_scope_id",
-  "_scope",
-  "_scope_with_id",
-  "_el_resume",
+  // `_sep()` emits `<!>` between adjacent text nodes so the walker can tell
+  // them apart. It takes the same shouldResume argument as _el_resume and is
+  // suppressed by the same guards; no fixture in the wave-1 subset reaches an
+  // unguarded one (adjacent dynamic text needs `<if>`/`<for>`), so it stays
+  // dropped -- with a check in translateHtmlCall that fails loudly if an
+  // UNGUARDED one ever appears.
   "_sep",
-  // `_script` is where Marko 6 puts a tag's client-side effect code. go-marko
-  // is server-only, so it drops it; shipping page JS is FR6's problem (see
-  // notes/go-marko-feature-requests.md) and the DX decision is still open.
-  "_script",
+  // Client-side subscription bookkeeping: links a child scope into a parent
+  // signal's closure Set. It only has an effect when the parent scope
+  // serializes its closure Set, which needs a non-zero guard.
   "_subscribe",
-  "_resume_branch",
+  // Registry registration for a value/getter reachable from client code
+  // (`_el`, `_hoist`). Wave 1 never produces server-side registered values
+  // beyond `_script`; see contract sec 6.
   "_resume",
   "_resume_locals",
-  "_peek_scope_id",
-  "_existing_scope",
   "_id",
   // Emitted by <html-script>. It renders the CSP nonce from `$global.cspNonce`,
   // which marko-go has no equivalent for (no $global yet), so it always
@@ -87,10 +101,17 @@ export const RESUME_ONLY = new Set([
  */
 export const STATEMENT_INTRINSICS = {
   _html: { translate: translateHtmlCall },
-  _trailers: { translate: translateHtmlCall },
+  // `_trailers` carries the closing `</body></html>` the compiler defers past
+  // where the resume payload goes. It is NOT ordinary markup: it must land
+  // AFTER the payload script, so it goes to the Writer's trailer buffer.
+  _trailers: { translate: translateTrailers },
   _for_of: { translate: translateForOf },
   _if: { translate: translateIfWrapper },
   _dynamic_tag: { translate: translateDynamicTag },
+  // --- resumability -------------------------------------------------------
+  _scope: { translate: (ctx, node) => translateScope(ctx, node, translateExpr) },
+  _script: { translate: translateScript },
+  _resume_branch: { translate: translateResumeBranch },
 };
 
 /**
@@ -101,9 +122,12 @@ export const STATEMENT_INTRINSICS = {
  * Each entry's `translate(ctx, node)` returns a Go EXPRESSION of type string;
  * `translateHtmlCall` wraps it in `w.HTML(...)`.
  *
- * FR12: `_el_resume` lands here (it emits `<!--M_*N acc-->` into the same
- * stream). `_script`, by contrast, lands in STATEMENT_INTRINSICS and writes to
- * ctx's SECONDARY output channel, not to w.HTML -- see ctx.mjs.
+ * `_el_resume` is the one interpolation that is NOT in this table even though
+ * it writes to the HTML stream: the Go side is `w.Marker(op, id, accessor)`, a
+ * statement rather than a string expression, so translateHtmlCall handles it
+ * directly. Keeping the Writer method (instead of a `runtime.Marker(...)`
+ * string helper) is what lets Marker record `needsRuntime` on the same Writer
+ * that will flush the payload.
  */
 export const HTML_PART_INTRINSICS = {
   _escape: {
@@ -144,6 +168,15 @@ export const HTML_PART_INTRINSICS = {
  *    renderer and every `$global.x` is a plain member read.
  *  - `attrTag`     FR11. Wraps a named section's payload on the CALLER side:
  *    `head: _attrTag({ content: _content_resume(...) })`.
+ *  - `_el_resume`  FR12. Only valid as an `_html` template-literal
+ *    interpolation; see HTML_PART_INTRINSICS's header for why it is not in
+ *    that table.
+ *  - `_scope_id` / `_peek_scope_id`  FR12. Only valid as a variable
+ *    initializer (`const $scope0_id = _scope_id()`), because the Go form
+ *    binds a variable the rest of the body refers to.
+ *  - `_scope_with_id` / `_existing_scope`  FR12. Only valid as a `_scope`
+ *    property value, where they become a `runtime.ScopeRef` (`_(id)` on the
+ *    wire). Recognized by resume.mjs's translateScopeValue.
  */
 export const STRUCTURAL_INTRINSICS = new Set([
   "_template",
@@ -151,6 +184,11 @@ export const STRUCTURAL_INTRINSICS = new Set([
   "_content_resume",
   "$global",
   "attrTag",
+  "_el_resume",
+  "_scope_id",
+  "_peek_scope_id",
+  "_scope_with_id",
+  "_existing_scope",
 ]);
 
 /**
