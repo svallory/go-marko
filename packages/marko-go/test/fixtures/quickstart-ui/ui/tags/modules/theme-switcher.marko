@@ -1,0 +1,11 @@
+// Theme toggle button. The behavior lives in /assets/js/theme.js (loaded by
+// page-layout) -- Marko 6 compiles top-level <script> blocks as client-effect
+// code for a browser bundle, so server-only go-marko ships page JS as plain
+// static assets instead.
+export interface Input {
+  class?: string;
+}
+
+<ui-button size="icon" variant="ghost" class=input.class attrs={ "data-theme-switcher": "true" }>
+  <icon-eclipse class="size-5"/>
+</ui-button>

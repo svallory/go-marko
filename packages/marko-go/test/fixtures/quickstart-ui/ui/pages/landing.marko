@@ -1,0 +1,32 @@
+// The landing page. Rendered by main.go via marko.Handler(pages.Landing).
+// No input needed — a page with data would declare fields on Input and
+// main.go would pass pages.LandingInput{...}.
+export interface Input {}
+
+<page-layout title="go-marko Quickstart">
+  <div class="flex h-full items-center justify-center">
+    <div class="flex w-full max-w-2xl flex-col items-center justify-center gap-4 px-4">
+      <div class="space-y-4 text-center">
+        <h1 class="text-5xl font-bold tracking-tight">go-marko Quickstart</h1>
+        <p class="text-muted-foreground mx-auto max-w-md text-lg">
+          Build modern web applications with
+          <br>
+          Go, Marko, and Tailwind CSS.
+        </p>
+      </div>
+      <div class="flex gap-3">
+        <ui-button variant="default" href="https://markojs.com/docs" target="_blank">
+          <icon-book class="size-4"/>
+          Documentation
+        </ui-button>
+        <ui-button variant="outline" href="https://github.com/svallory/go-marko" target="_blank">
+          <icon-git-branch class="size-4"/>
+          GitHub
+        </ui-button>
+      </div>
+      <p class="text-muted-foreground text-sm">
+        <a href="https://github.com/svallory/go-marko/discussions" target="_blank" class="text-primary underline underline-offset-4 hover:opacity-80">Join the community</a>
+      </p>
+    </div>
+  </div>
+</page-layout>

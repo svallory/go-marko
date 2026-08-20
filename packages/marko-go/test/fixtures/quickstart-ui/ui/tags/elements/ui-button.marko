@@ -1,0 +1,48 @@
+// A templUI-style button as a plain Marko tag: HTML + Tailwind, no JS.
+// Renders an <a> when href is given, a <button> otherwise. Extra
+// attributes (e.g. data-*) pass through via attrs.
+export interface Input {
+  variant?: "default" | "secondary" | "outline" | "ghost";
+  size?: "default" | "icon";
+  href?: string;
+  target?: string;
+  type?: "button" | "submit" | "reset";
+  class?: string;
+  attrs?: Marko.HTMLAttributes;
+  content?: Marko.Body;
+}
+
+static const base =
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium " +
+  "transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring " +
+  "disabled:pointer-events-none disabled:opacity-50";
+
+static const variants = {
+  default: "bg-primary text-primary-foreground shadow hover:bg-primary/90",
+  secondary: "bg-secondary text-secondary-foreground shadow-sm hover:bg-secondary/80",
+  outline: "border border-input bg-background shadow-sm hover:bg-accent hover:text-accent-foreground",
+  ghost: "hover:bg-accent hover:text-accent-foreground",
+};
+
+static const sizes = {
+  default: "h-9 px-4 py-2",
+  icon: "h-9 w-9",
+};
+
+<const/classes=[
+  base,
+  variants[input.variant ?? "default"],
+  sizes[input.size ?? "default"],
+  input.class,
+]>
+
+<if=input.href>
+  <a href=input.href target=input.target class=classes ...input.attrs>
+    <${input.content}/>
+  </a>
+</if>
+<else>
+  <button type=(input.type ?? "button") class=classes ...input.attrs>
+    <${input.content}/>
+  </button>
+</else>

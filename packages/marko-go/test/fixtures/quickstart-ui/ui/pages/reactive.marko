@@ -1,0 +1,40 @@
+// The idiomatic Marko counter -- client-side reactivity, zero hand-written
+// JS. <let> state and onClick handlers hydrate via go-marko's resume
+// support (native tags only on this page: wave-1 scope).
+export interface Input {}
+
+<page-layout title="Reactive — go-marko Quickstart">
+  <@head>
+    <meta name="description" content="Idiomatic Marko reactivity served from Go: let-state and onClick, no hand-written JS.">
+  </@head>
+  <div class="flex h-full items-center justify-center">
+    <div class="flex w-full max-w-2xl flex-col items-center justify-center gap-6 px-4">
+      <div class="space-y-2 text-center">
+        <h1 class="text-4xl font-bold tracking-tight">Reactive</h1>
+        <p class="text-muted-foreground text-sm">
+          This is Marko. <code>&lt;let/count=0&gt;</code>, <code>onClick() { count++ }</code> — hydrated, no hand-written JS.
+        </p>
+      </div>
+
+      <let/count=0>
+
+      <div class="text-6xl font-bold tabular-nums">${count}</div>
+
+      <div class="flex gap-3">
+        <button
+          class="inline-flex h-9 items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground shadow transition-colors hover:bg-primary/90"
+          onClick() { count++ }
+        >
+          Increment
+        </button>
+        <button
+          class="inline-flex h-9 items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium shadow-sm transition-colors hover:bg-accent hover:text-accent-foreground"
+          disabled=(count === 0)
+          onClick() { count = 0 }
+        >
+          Reset
+        </button>
+      </div>
+    </div>
+  </div>
+</page-layout>

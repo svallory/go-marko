@@ -1,0 +1,22 @@
+export interface Input {}
+
+<nav class="py-1">
+  <div class="relative flex items-center justify-between px-6">
+    <div class="flex items-center">
+      <a href="/" class="flex items-center gap-1.5">
+        <icon-toggle-left class="h-6 w-6"/>
+        <span class="text-xl">go-<span class="font-bold">marko</span></span>
+      </a>
+    </div>
+    <div class="flex items-center justify-center gap-1">
+      <ui-button
+        variant="ghost"
+        href="/counter"
+        class=($global.path === "/counter" && "bg-accent text-accent-foreground")
+      >
+        Counter
+      </ui-button>
+      <theme-switcher/>
+    </div>
+  </div>
+</nav>

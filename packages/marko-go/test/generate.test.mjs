@@ -10,8 +10,7 @@ import { UnsupportedError } from "../src/errors.mjs";
  * assert the emitted Go. The fixture is copied into a temp dir first so the
  * real one stays pristine and a failing run leaves nothing behind.
  */
-const FIXTURE =
-  "/private/tmp/claude-501/-Users-svallory-work-go-marko/6b33a62a-f0c0-4f0a-af15-a7bea5f57259/scratchpad/qsfixture";
+const FIXTURE = path.join(import.meta.dirname, "fixtures", "quickstart-ui");
 
 let root; // temp copy
 let uiDir;

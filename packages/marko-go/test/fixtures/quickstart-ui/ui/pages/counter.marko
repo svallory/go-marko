@@ -1,0 +1,63 @@
+// Counter demo: form POSTs, typed-slice loops, conditional classes.
+// State lives in main.go; this page is a pure function of Input.
+export interface Input {
+  global: number;
+  user: number;
+  events: { label: string; count: number }[];
+}
+
+<page-layout title="Counter — go-marko Quickstart">
+  <@head>
+    <meta name="description" content="Server-rendered counter demo: form POSTs, typed loops, zero client JS.">
+  </@head>
+  <div class="flex h-full items-center justify-center">
+    <div class="flex w-full max-w-2xl flex-col items-center justify-center gap-6 px-4">
+      <div class="space-y-2 text-center">
+        <h1 class="text-4xl font-bold tracking-tight">Counter</h1>
+        <p class="text-muted-foreground text-sm">
+          Server-rendered state, plain form POSTs. No client JS.
+        </p>
+      </div>
+
+      <div class="flex gap-8">
+        <div class="text-center">
+          <div class="text-5xl font-bold tabular-nums">${input.global}</div>
+          <div class="text-muted-foreground text-sm">global</div>
+        </div>
+        <div class="text-center">
+          <div class="text-5xl font-bold tabular-nums">${input.user}</div>
+          <div class="text-muted-foreground text-sm">you</div>
+        </div>
+      </div>
+
+      <form action="/counter" method="POST" class="flex gap-3">
+        <ui-button type="submit" variant="default" attrs={ name: "target", value: "global" }>
+          Increment global
+        </ui-button>
+        <ui-button type="submit" variant="outline" attrs={ name: "target", value: "user" }>
+          Increment mine
+        </ui-button>
+      </form>
+
+      <if=input.events.length>
+        <div class="w-full max-w-sm">
+          <h2 class="text-muted-foreground mb-2 text-center text-sm font-medium">Recent activity</h2>
+          <ul class="divide-border divide-y rounded-md border">
+            <for|event, i| of=input.events>
+              <li class=[
+                "flex items-center justify-between px-3 py-1.5 text-sm",
+                i === 0 && "bg-accent/50 font-medium",
+              ]>
+                <span>${event.label}</span>
+                <span class="text-muted-foreground tabular-nums">${event.count}</span>
+              </li>
+            </for>
+          </ul>
+        </div>
+      </if>
+      <else>
+        <p class="text-muted-foreground text-sm">No clicks yet — be the first.</p>
+      </else>
+    </div>
+  </div>
+</page-layout>
