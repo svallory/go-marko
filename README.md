@@ -1,5 +1,10 @@
 # Go, Marko!
 
+[![CI](https://github.com/svallory/go-marko/actions/workflows/ci.yml/badge.svg)](https://github.com/svallory/go-marko/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/svallory/go-marko.svg)](https://pkg.go.dev/github.com/svallory/go-marko)
+[![npm](https://img.shields.io/npm/v/marko-go.svg)](https://www.npmjs.com/package/marko-go)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
 Render [Marko](https://markojs.com) templates — TS-typed, custom tags, client
 reactivity via resumability — from Go.
 
@@ -35,6 +40,17 @@ file exposing a typed render function you call from your Go handlers.
 - Documentation: <https://go-marko.saulo.tech>
 - Quickstart: <https://github.com/svallory/go-marko-quickstart>
 
+## Contributing
+
+Bug reports, feature requests, and PRs are welcome. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and the PR
+process, and [CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md) for community
+guidelines.
+
+## Security
+
+See [SECURITY.md](./SECURITY.md) for how to report vulnerabilities.
+
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).

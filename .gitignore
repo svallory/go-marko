@@ -3,3 +3,12 @@ node_modules/
 # moon
 .moon/cache
 .moon/docker
+
+# OS
+.DS_Store
+Thumbs.db
+
+# editors
+.idea/
+*.swp
+*.swo
