@@ -6,9 +6,11 @@
   "type": "module",
   "scripts": {
     "dev": "docmd dev",
-    "build": "docmd build"
+    "build": "docmd build",
+    "deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "@docmd/core": "0.9.3"
+    "@docmd/core": "0.9.3",
+    "wrangler": "4.124.0"
   }
 }

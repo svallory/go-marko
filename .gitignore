@@ -3,6 +3,10 @@ node_modules/
 # docmd build output
 docs/site/
 
+# wrangler
+.wrangler/
+worker-configuration.d.ts
+
 # moon
 .moon/cache
 .moon/docker
