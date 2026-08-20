@@ -1,0 +1,10 @@
+# https://moonrepo.dev/docs/config/toolchain
+$schema: "https://moonrepo.dev/schemas/toolchains.json"
+
+# Exact tool versions come from the root .prototools file (bun, go).
+# versionFromPrototools defaults to true, so we don't duplicate versions here.
+go:
+  tidyOnChange: false
+  workspaces: true
+
+bun: {}

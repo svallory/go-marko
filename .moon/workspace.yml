@@ -1,0 +1,11 @@
+# https://moonrepo.dev/docs/config/workspace
+$schema: "https://moonrepo.dev/schemas/workspace.json"
+
+# Project registry: the npm package (codegen/) and the root Go module (".").
+projects:
+  codegen: "codegen"
+  gomod: "."
+
+vcs:
+  defaultBranch: "main"
+  provider: "github"

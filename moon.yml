@@ -1,0 +1,40 @@
+# https://moonrepo.dev/docs/config/project
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+language: "go"
+
+tasks:
+  vet:
+    command: "go"
+    args: ["vet", "./..."]
+    toolchain: "go"
+    inputs:
+      - "**/*.go"
+      - "go.mod"
+
+  test:
+    command: "go"
+    args: ["test", "-buildvcs=false", "./..."]
+    toolchain: "go"
+    inputs:
+      - "**/*.go"
+      - "go.mod"
+
+  build:
+    command: "go"
+    args: ["build", "-buildvcs=false", "./..."]
+    toolchain: "go"
+    inputs:
+      - "**/*.go"
+      - "go.mod"
+    deps:
+      - "vet"
+
+  # Aggregate entry point run by CI: `moon run :check`.
+  check:
+    command: "echo"
+    args: "gomod checks passed"
+    deps:
+      - "test"
+      - "vet"
+      - "build"

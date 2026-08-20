@@ -1,0 +1,36 @@
+# https://moonrepo.dev/docs/config/project
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+language: "typescript"
+
+tasks:
+  test:
+    command: "bun"
+    args: ["test"]
+    inputs:
+      - "src/**/*"
+      - "test/**/*"
+      - "package.json"
+      - "bun.lock"
+
+  generate-examples:
+    script: |
+      bun src/cli.mjs generate ../examples/hello
+      bun src/cli.mjs generate ../examples/counter
+    inputs:
+      - "src/**/*"
+      - "/examples/hello/**/*.marko"
+      - "/examples/counter/**/*.marko"
+    outputs:
+      - "/examples/hello/**/*.go"
+      - "/examples/counter/**/*.go"
+    options:
+      cache: false
+
+  # Aggregate entry point run by CI: `moon run :check`.
+  check:
+    command: "echo"
+    args: "codegen checks passed"
+    deps:
+      - "test"
+      - "generate-examples"
