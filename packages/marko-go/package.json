@@ -27,7 +27,9 @@
     "access": "public"
   },
   "scripts": {
-    "test": "bun test"
+    "test": "bun test",
+    "release": "bash scripts/release.sh",
+    "prepublishOnly": "bun test && bun ../../scripts/release-check.mjs"
   },
   "dependencies": {
     "@babel/parser": "^7.29.8",
