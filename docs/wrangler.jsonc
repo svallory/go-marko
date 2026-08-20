@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "go-marko-docs",
+  "compatibility_date": "2026-08-20",
+  "assets": {
+    "directory": "./site"
+  },
+  "routes": [
+    {
+      "pattern": "go-marko.saulo.tech",
+      "custom_domain": true
+    }
+  ]
+}
