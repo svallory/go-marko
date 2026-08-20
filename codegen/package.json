@@ -18,7 +18,7 @@
   "bin": {
     "marko-go": "./src/cli.mjs"
   },
-  "files": ["src", "README.md"],
+  "files": ["src", "README.md", "LICENSE"],
   "engines": {
     "node": ">=20.19.0",
     "bun": ">=1.2.0"
