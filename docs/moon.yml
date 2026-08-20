@@ -4,6 +4,23 @@ $schema: "https://moonrepo.dev/schemas/project.json"
 language: "typescript"
 
 tasks:
+  # moon's bun/node toolchain plugins do not implement automatic
+  # `bun install` before tasks run (verified: `moon toolchain info bun`
+  # shows install_dependencies/locate_dependencies_root as unregistered).
+  # A root package.json + "workspaces" gives us one bun.lock and correct
+  # hoisting/publishability, but installing is still our job -- hence this
+  # explicit task, cached on the root manifest/lockfile so it's a no-op
+  # once node_modules is up to date.
+  install:
+    command: "bun"
+    args: ["install", "--cwd", ".."]
+    inputs:
+      - "/package.json"
+      - "/bun.lock"
+      - "package.json"
+    outputs:
+      - "node_modules/**/*"
+
   build:
     command: "bun"
     args: ["run", "build"]
@@ -11,8 +28,11 @@ tasks:
       - "docs/**/*"
       - "docmd.config.json"
       - "package.json"
+      - "/bun.lock"
     outputs:
       - "site/**/*"
+    deps:
+      - "install"
 
   dev:
     command: "bun"
@@ -20,6 +40,8 @@ tasks:
     preset: "server"
     options:
       cache: false
+    deps:
+      - "install"
 
   # Aggregate entry point run by CI: `moon run :check`.
   check:

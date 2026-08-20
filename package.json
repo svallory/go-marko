@@ -1,0 +1,10 @@
+{
+  "name": "go-marko",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Workspace root for go-marko (packages/marko-go npm package + docs site). Not published.",
+  "workspaces": [
+    "docs",
+    "packages/marko-go"
+  ]
+}

@@ -4,6 +4,31 @@ $schema: "https://moonrepo.dev/schemas/project.json"
 language: "typescript"
 
 tasks:
+  # moon's bun/node toolchain plugins do not implement automatic
+  # `bun install` before tasks run (verified: `moon toolchain info bun`
+  # shows install_dependencies/locate_dependencies_root as unregistered).
+  # A root package.json + "workspaces" gives us one bun.lock and correct
+  # hoisting/publishability, but installing is still our job -- hence this
+  # explicit task, cached on the root manifest/lockfile so it's a no-op
+  # once node_modules is up to date.
+  # `docs` and `marko-go` share one bun workspace install at the repo root
+  # (single package.json/bun.lock, verified via `bun install --cwd ../..`).
+  # Running both projects' `install` in parallel races the same
+  # node_modules tree (bun's clonefileat linker throws EEXIST), so this one
+  # depends on docs:install to force moon to serialize them; only one of
+  # the two projects needs to actually own the "do the install" task.
+  install:
+    command: "bun"
+    args: ["install", "--cwd", "../.."]
+    inputs:
+      - "/package.json"
+      - "/bun.lock"
+      - "package.json"
+    outputs:
+      - "node_modules/**/*"
+    deps:
+      - "docs:install"
+
   test:
     command: "bun"
     args: ["test"]
@@ -11,7 +36,9 @@ tasks:
       - "src/**/*"
       - "test/**/*"
       - "package.json"
-      - "bun.lock"
+      - "/bun.lock"
+    deps:
+      - "install"
 
   generate-examples:
     script: |
@@ -26,6 +53,8 @@ tasks:
       - "/examples/counter/**/*.go"
     options:
       cache: false
+    deps:
+      - "install"
 
   # Lockstep version gate: packages/marko-go/package.json, the version marker
   # codegen emits, and the sentinel runtime/version.go exports must all
@@ -38,6 +67,8 @@ tasks:
       - "package.json"
       - "/runtime/version.go"
       - "/scripts/release-check.mjs"
+    deps:
+      - "install"
 
   # Aggregate entry point run by CI: `moon run :check`.
   check:
