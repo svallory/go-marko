@@ -11,35 +11,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup bun
-        uses: oven-sh/setup-bun@v2
+      - name: Setup proto & moon toolchain
+        uses: moonrepo/setup-toolchain@v0
         with:
-          bun-version-file: codegen/package.json
+          auto-install: true
 
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      - name: Install codegen dependencies
-        run: bun install --frozen-lockfile
-        working-directory: codegen
-
-      - name: bun test
-        run: bun test
-        working-directory: codegen
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: go test
-        run: go test ./...
-
-      - name: Regenerate examples
-        run: |
-          bun src/cli.mjs generate ../examples/hello
-          bun src/cli.mjs generate ../examples/counter
-        working-directory: codegen
+      - name: Run checks (bun test, go vet, go test, build)
+        run: moon run :check
 
       - name: Fail if generated examples drifted
         run: git diff --exit-code examples/
