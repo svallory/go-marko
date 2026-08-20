@@ -1,0 +1,14 @@
+{
+  "name": "@go-marko/docs",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Documentation site for Go, Marko! — built with docmd.",
+  "type": "module",
+  "scripts": {
+    "dev": "docmd dev",
+    "build": "docmd build"
+  },
+  "devDependencies": {
+    "@docmd/core": "0.9.3"
+  }
+}

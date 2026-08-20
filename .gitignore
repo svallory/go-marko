@@ -1,5 +1,8 @@
 node_modules/
 
+# docmd build output
+docs/site/
+
 # moon
 .moon/cache
 .moon/docker

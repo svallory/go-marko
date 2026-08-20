@@ -1,0 +1,18 @@
+{
+  "title": "Go, Marko!",
+  "url": "https://go-marko.saulo.tech",
+  "src": "docs",
+  "out": "site",
+  "theme": {
+    "name": "default"
+  },
+  "navigation": [
+    { "title": "Introduction", "path": "/index" },
+    { "title": "Install", "path": "/install" },
+    { "title": "Getting Started", "path": "/getting-started" },
+    { "title": "Templates", "path": "/templates" },
+    { "title": "Reactivity", "path": "/reactivity" },
+    { "title": "HTTP", "path": "/http" },
+    { "title": "CLI", "path": "/cli" }
+  ]
+}

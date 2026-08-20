@@ -1,0 +1,29 @@
+# https://moonrepo.dev/docs/config/project
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+language: "typescript"
+
+tasks:
+  build:
+    command: "bun"
+    args: ["run", "build"]
+    inputs:
+      - "docs/**/*"
+      - "docmd.config.json"
+      - "package.json"
+    outputs:
+      - "site/**/*"
+
+  dev:
+    command: "bun"
+    args: ["run", "dev"]
+    preset: "server"
+    options:
+      cache: false
+
+  # Aggregate entry point run by CI: `moon run :check`.
+  check:
+    command: "echo"
+    args: "docs checks passed"
+    deps:
+      - "build"
