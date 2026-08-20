@@ -15,8 +15,8 @@ tasks:
 
   generate-examples:
     script: |
-      bun src/cli.mjs generate ../examples/hello
-      bun src/cli.mjs generate ../examples/counter
+      bun src/cli.mjs generate ../../examples/hello
+      bun src/cli.mjs generate ../../examples/counter
     inputs:
       - "src/**/*"
       - "/examples/hello/**/*.marko"
@@ -27,12 +27,12 @@ tasks:
     options:
       cache: false
 
-  # Lockstep version gate: codegen/package.json, the version marker codegen
-  # emits, and the sentinel runtime/version.go exports must all agree. See
-  # scripts/release-check.mjs and runtime/version.go.
+  # Lockstep version gate: packages/marko-go/package.json, the version marker
+  # codegen emits, and the sentinel runtime/version.go exports must all
+  # agree. See scripts/release-check.mjs and runtime/version.go.
   release-check:
     command: "bun"
-    args: ["../scripts/release-check.mjs"]
+    args: ["../../scripts/release-check.mjs"]
     inputs:
       - "src/**/*"
       - "package.json"
@@ -42,7 +42,7 @@ tasks:
   # Aggregate entry point run by CI: `moon run :check`.
   check:
     command: "echo"
-    args: "codegen checks passed"
+    args: "marko-go checks passed"
     deps:
       - "test"
       - "generate-examples"

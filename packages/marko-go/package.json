@@ -8,7 +8,7 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/svallory/go-marko.git",
-    "directory": "codegen"
+    "directory": "packages/marko-go"
   },
   "homepage": "https://go-marko.saulo.tech",
   "bugs": {

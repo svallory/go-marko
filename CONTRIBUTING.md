@@ -4,8 +4,8 @@ Thanks for your interest in contributing. This repo is a
 [moon](https://moonrepo.dev)-managed monorepo containing:
 
 - `runtime/`, `marko/` — the Go module (`github.com/svallory/go-marko`)
-- `codegen/` — the npm package `marko-go` (the `.marko` → Go compiler/CLI), managed with [bun](https://bun.sh)
-- `examples/` — generated example apps kept in sync with `codegen/` in CI
+- `packages/marko-go/` — the npm package `marko-go` (the `.marko` → Go compiler/CLI), managed with [bun](https://bun.sh)
+- `examples/` — generated example apps kept in sync with `packages/marko-go/` in CI
 
 ## Development setup
 
@@ -26,10 +26,10 @@ go vet ./...
 go build -buildvcs=false ./...
 ```
 
-### Codegen package (codegen/)
+### Codegen package (packages/marko-go/)
 
 ```sh
-cd codegen
+cd packages/marko-go
 bun install
 bun test
 ```
@@ -52,9 +52,9 @@ codegen currently produces (`git diff --exit-code examples/`).
 
 ## Releasing
 
-`marko-go` (codegen/) and the Go module `github.com/svallory/go-marko`
+`marko-go` (packages/marko-go/) and the Go module `github.com/svallory/go-marko`
 (runtime/, marko/) are versioned in lockstep: one version, sourced from
-`codegen/package.json`'s `"version"`. A single git tag `vX.Y.Z` releases
+`packages/marko-go/package.json`'s `"version"`. A single git tag `vX.Y.Z` releases
 both — Go modules resolve versions straight from repo tags, so the same tag
 that npm-publishes `marko-go` also *is* the Go module's release.
 
@@ -67,7 +67,7 @@ downstream error. A patch bump never touches this marker.
 
 To cut a release:
 
-1. Bump `"version"` in `codegen/package.json`.
+1. Bump `"version"` in `packages/marko-go/package.json`.
    - Bumping the **major or minor** also requires adding the matching
      `GeneratedByMarkoGo_vX_Y` constant to `runtime/version.go` (keep the old
      one too, until no supported release still needs it — see that file's
@@ -75,14 +75,14 @@ To cut a release:
    - A **patch** bump needs no runtime change.
 2. Regenerate generated output and commit any diff:
    ```sh
-   cd codegen && UPDATE_GOLDENS=1 bun test test/golden/golden.test.mjs
-   moon run codegen:generate-examples   # or: moon run :check
+   cd packages/marko-go && UPDATE_GOLDENS=1 bun test test/golden/golden.test.mjs
+   moon run marko-go:generate-examples   # or: moon run :check
    ```
 3. Run the lockstep check locally (also enforced in CI):
    ```sh
    bun scripts/release-check.mjs
    ```
-   This asserts `codegen/package.json`'s version, the marker codegen emits,
+   This asserts `packages/marko-go/package.json`'s version, the marker codegen emits,
    and the constant `runtime/version.go` exports all agree.
 4. Commit, then tag and push:
    ```sh
@@ -91,7 +91,7 @@ To cut a release:
    ```
 5. Publish `marko-go` to npm manually (no automated publish yet):
    ```sh
-   cd codegen && npm publish
+   cd packages/marko-go && npm publish
    ```
    The Go module needs no separate publish step — `go get
    github.com/svallory/go-marko@vX.Y.Z` resolves directly from the pushed tag.
@@ -99,9 +99,9 @@ To cut a release:
 ## Code style
 
 - Go code: standard `gofmt`/`go vet` conventions.
-- Codegen (`codegen/`): plain `.mjs`, no build step — keep it that way (see
-  `codegen/package.json` — this package intentionally ships un-transpiled
-  JavaScript).
+- Codegen (`packages/marko-go/`): plain `.mjs`, no build step — keep it that
+  way (see `packages/marko-go/package.json` — this package intentionally
+  ships un-transpiled JavaScript).
 
 ## Commit messages & PRs
 

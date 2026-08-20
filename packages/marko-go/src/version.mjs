@@ -2,7 +2,7 @@
  * Lockstep version between the npm package `marko-go` and the Go runtime it
  * targets.
  *
- * There is exactly ONE version, sourced from `codegen/package.json`. A git
+ * There is exactly ONE version, sourced from `packages/marko-go/package.json`. A git
  * tag `vX.Y.Z` releases both halves at once: `npm publish` of marko-go, and
  * the Go module tag `github.com/svallory/go-marko@vX.Y.Z` -- Go modules use
  * repo tags directly, so the same tag serves both by construction.

@@ -22,7 +22,7 @@ import { generateProject } from "../../src/project.mjs";
  *
  * Regenerate goldens after an intentional output change:
  *
- *   UPDATE_GOLDENS=1 bun test codegen/test/golden/golden.test.mjs
+ *   UPDATE_GOLDENS=1 bun test test/golden/golden.test.mjs
  */
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));

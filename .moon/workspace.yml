@@ -1,10 +1,10 @@
 # https://moonrepo.dev/docs/config/workspace
 $schema: "https://moonrepo.dev/schemas/workspace.json"
 
-# Project registry: the npm package (codegen/), the root Go module ("."),
-# and the docmd docs site (docs/).
+# Project registry: the npm package (packages/marko-go/), the root Go
+# module ("."), and the docmd docs site (docs/).
 projects:
-  codegen: "codegen"
+  marko-go: "packages/marko-go"
   gomod: "."
   docs: "docs"
 

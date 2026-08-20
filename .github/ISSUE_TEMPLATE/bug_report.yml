@@ -8,7 +8,7 @@ body:
       label: Component
       options:
         - Go module (runtime/, marko/)
-        - marko-go codegen/CLI (codegen/)
+        - marko-go codegen/CLI (packages/marko-go/)
         - Not sure
     validations:
       required: true

@@ -2,7 +2,7 @@ package runtime
 
 // Codegen/runtime lockstep versioning.
 //
-// marko-go (the npm package under codegen/) and this runtime package are
+// marko-go (the npm package under packages/marko-go/) and this runtime package are
 // versioned together: a git tag vX.Y.Z releases both -- npm publish of
 // marko-go, and the Go module tag github.com/svallory/go-marko@vX.Y.Z (Go
 // modules read repo tags directly, so one tag covers both by construction).
@@ -20,7 +20,7 @@ package runtime
 //
 // Every generated `.marko.go` file references exactly one of the constants
 // below, named after the major.minor version of the marko-go that generated
-// it (see codegen/src/version.mjs's versionSentinelName + emit.mjs /
+// it (see packages/marko-go/src/version.mjs's versionSentinelName + emit.mjs /
 // globals.mjs):
 //
 //	var _ = runtime.GeneratedByMarkoGo_v0_1

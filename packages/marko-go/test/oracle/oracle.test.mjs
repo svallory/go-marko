@@ -28,7 +28,7 @@ const GO_RUN_TIMEOUT_MS = 20_000;
  * explicitly and so a contributor iterating on codegen isn't forced to pay
  * the `go run` cost on every save. Run explicitly with:
  *
- *   bun test codegen/test/oracle
+ *   bun test test/oracle
  *
  * See divergences.md for fixtures deliberately EXCLUDED here because Go
  * and JS output legitimately differ today -- those are backlog items, not

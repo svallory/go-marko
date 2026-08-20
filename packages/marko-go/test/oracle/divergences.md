@@ -46,7 +46,7 @@ referencing this entry.
 
 **Closed by FR12 wave 1, Phase C.** go-marko now emits the resume payload
 itself, so there is nothing left to strip: `_el_resume`, `_scope`, `_script`
-and `_trailers` are real translators (`codegen/src/resume.mjs`) feeding the
+and `_trailers` are real translators (`src/resume.mjs`) feeding the
 Writer's resume channel (`runtime/resume.go`).
 
 `helpers.mjs`'s `RESUME_BOOTSTRAP_TAIL` regex and the per-case

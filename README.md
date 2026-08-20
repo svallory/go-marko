@@ -14,7 +14,7 @@ required at request time.
 
 ## Install
 
-- CLI / codegen (npm): `npm install -D marko-go` (or `bun add -d marko-go`)
+- CLI / codegen (npm): `npm install -D marko-go` (or `bun add -d marko-go`, package lives at `packages/marko-go/`)
 - Go module: `go get github.com/svallory/go-marko`
 
 > **Naming**: the CLI and npm package are `marko-go`; the Go module is
@@ -32,7 +32,7 @@ file exposing a typed render function you call from your Go handlers.
 ## Repo layout
 
 - `runtime/`, `marko/` — the Go module (`github.com/svallory/go-marko`)
-- `codegen/` — the npm package (`marko-go`), the compiler/CLI
+- `packages/marko-go/` — the npm package (`marko-go`), the compiler/CLI
 - `examples/` — generated example apps, kept in sync with codegen in CI
 
 ## Docs

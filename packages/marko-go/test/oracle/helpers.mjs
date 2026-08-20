@@ -27,7 +27,7 @@ import { generateProject } from "../../src/project.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 export const FIXTURES = path.join(HERE, "..", "golden", "fixtures");
-export const REPO_ROOT = path.resolve(HERE, "..", "..", "..");
+export const REPO_ROOT = path.resolve(HERE, "..", "..", "..", "..");
 
 const TRANSLATOR = createRequire(import.meta.url).resolve(
   "@marko/runtime-tags/translator",

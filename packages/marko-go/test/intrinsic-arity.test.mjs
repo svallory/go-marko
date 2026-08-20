@@ -8,7 +8,7 @@ import path from "node:path";
 
 /**
  * Guards the toolchain pin (see README.md "Toolchain pinning"). This file
- * does NOT import anything from codegen/src -- on purpose. transpile.mjs
+ * does NOT import anything from src/ -- on purpose. transpile.mjs
  * asserts exact intrinsic names, import shapes and call arities against the
  * JS that `@marko/compiler` + `@marko/runtime-tags` actually emit; those
  * assumptions live only in transpile.mjs's own code, which this test must
@@ -125,7 +125,7 @@ function findCalls(program, localName) {
 
 function fail(intrinsic, detail) {
   throw new Error(
-    `${detail} (intrinsic: ${intrinsic}) -- Marko toolchain contract changed -- see codegen/README.md Toolchain pinning`,
+    `${detail} (intrinsic: ${intrinsic}) -- Marko toolchain contract changed -- see packages/marko-go/README.md Toolchain pinning`,
   );
 }
 

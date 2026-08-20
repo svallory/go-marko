@@ -1,14 +1,14 @@
 #!/usr/bin/env bun
 /**
  * Release-readiness gate for the lockstep version between the npm package
- * `marko-go` (codegen/) and the Go module github.com/svallory/go-marko
+ * `marko-go` (packages/marko-go/) and the Go module github.com/svallory/go-marko
  * (runtime/). Run in CI (and locally before tagging a release) to catch a
  * drifted version BEFORE it ships, rather than surfacing as a confusing
  * `go build` error for a downstream user.
  *
  * Asserts three things agree:
  *
- *   1. codegen/package.json's "version" -- the single source of truth.
+ *   1. packages/marko-go/package.json's "version" -- the single source of truth.
  *   2. The version marker codegen actually EMITS into generated Go files
  *      (transpile a throwaway template through the real emit path and read
  *      the `var _ = runtime.GeneratedByMarkoGo_vX_Y` line back out).
@@ -29,12 +29,12 @@ import { fileURLToPath } from "node:url";
 import {
   parseVersion,
   versionSentinelName,
-} from "../codegen/src/version.mjs";
-import { transpile } from "../codegen/src/transpile.mjs";
-import { compileMarko } from "../codegen/src/compile.mjs";
+} from "../packages/marko-go/src/version.mjs";
+import { transpile } from "../packages/marko-go/src/transpile.mjs";
+import { compileMarko } from "../packages/marko-go/src/compile.mjs";
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url)) + "/..";
-const PACKAGE_JSON_PATH = path.join(ROOT, "codegen", "package.json");
+const PACKAGE_JSON_PATH = path.join(ROOT, "packages", "marko-go", "package.json");
 const RUNTIME_VERSION_GO_PATH = path.join(ROOT, "runtime", "version.go");
 
 function fail(message) {
@@ -51,10 +51,10 @@ function ok(message) {
 const pkg = JSON.parse(fs.readFileSync(PACKAGE_JSON_PATH, "utf8"));
 const version = pkg.version;
 if (typeof version !== "string" || version.length === 0) {
-  fail(`codegen/package.json has no "version"`);
+  fail(`packages/marko-go/package.json has no "version"`);
 }
 const { major, minor, patch } = parseVersion(version);
-ok(`codegen/package.json version = ${version} (major=${major} minor=${minor} patch=${patch})`);
+ok(`packages/marko-go/package.json version = ${version} (major=${major} minor=${minor} patch=${patch})`);
 
 const expectedSentinel = versionSentinelName(version);
 
@@ -113,6 +113,6 @@ if (!constPattern.test(runtimeGoSrc)) {
 ok(`runtime/version.go exports ${expectedSentinel}`);
 
 console.log(
-  `release-check: PASS -- codegen/package.json, emitted Go, and runtime/version.go ` +
+  `release-check: PASS -- packages/marko-go/package.json, emitted Go, and runtime/version.go ` +
     `all agree on marko-go v${version} (sentinel ${expectedSentinel})`,
 );

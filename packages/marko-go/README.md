@@ -228,7 +228,7 @@ it cannot connect.
 `@marko/compiler` and `@marko/runtime-tags` are pinned to **exact** versions
 in `package.json` (no `^`/`~` range), currently `5.42.1` / `6.3.42`.
 
-**Why exact pins.** `codegen/src/transpile.mjs` does not treat the compiled
+**Why exact pins.** `src/transpile.mjs` does not treat the compiled
 JS as an arbitrary program -- it asserts exact intrinsic names, import
 shapes, and call arities (e.g. `_for_of`'s positional argument list,
 `_attrs`'s arity) that are internal implementation details of this specific
@@ -245,7 +245,7 @@ under this project's feet without a deliberate, reviewed bump.
 
 1. Bump the pin in `package.json` (still exact, no range) and run
    `bun install` to settle `bun.lock`.
-2. Run `bun test codegen/test/intrinsic-arity.test.mjs`. It compiles a small
+2. Run `bun test test/intrinsic-arity.test.mjs`. It compiles a small
    set of probe templates and asserts the exact intrinsic import names and
    call shapes the transpiler depends on -- if the new version changed any of
    them, this fails first and loudest, naming the intrinsic.
