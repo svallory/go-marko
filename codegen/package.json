@@ -3,23 +3,28 @@
   "version": "0.1.0",
   "description": "Compile Marko templates to type-safe Go render functions, with a templ-style --watch/--proxy dev loop.",
   "type": "module",
+  "author": "Saulo Vallory <me@saulo.engineer>",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/svallory/go-marko.git",
     "directory": "codegen"
   },
-  "homepage": "https://github.com/svallory/go-marko#readme",
+  "homepage": "https://go-marko.saulo.tech",
   "bugs": {
     "url": "https://github.com/svallory/go-marko/issues"
   },
-  "keywords": ["marko", "go", "golang", "templates", "codegen", "templ", "ssr"],
+  "keywords": ["marko", "go", "golang", "templates", "codegen", "templ", "ssr", "cli", "compiler"],
   "bin": {
     "marko-go": "./src/cli.mjs"
   },
   "files": ["src", "README.md"],
   "engines": {
-    "node": ">=20.19.0"
+    "node": ">=20.19.0",
+    "bun": ">=1.2.0"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "scripts": {
     "test": "bun test"
