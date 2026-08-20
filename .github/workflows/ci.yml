@@ -21,3 +21,6 @@ jobs:
 
       - name: Fail if generated examples drifted
         run: git diff --exit-code examples/
+
+      - name: Check codegen/runtime lockstep version
+        run: bun scripts/release-check.mjs

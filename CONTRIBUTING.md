@@ -50,6 +50,52 @@ in diffs. If you change codegen output, regenerate the examples and include
 the diff in your PR — CI fails the build if `examples/` doesn't match what
 codegen currently produces (`git diff --exit-code examples/`).
 
+## Releasing
+
+`marko-go` (codegen/) and the Go module `github.com/svallory/go-marko`
+(runtime/, marko/) are versioned in lockstep: one version, sourced from
+`codegen/package.json`'s `"version"`. A single git tag `vX.Y.Z` releases
+both — Go modules resolve versions straight from repo tags, so the same tag
+that npm-publishes `marko-go` also *is* the Go module's release.
+
+Every file `marko-go` generates embeds a reference to a runtime constant
+named after its major.minor version (`runtime.GeneratedByMarkoGo_v0_1`, see
+`runtime/version.go`). If a project's installed `runtime` package and
+`marko-go` CLI ever drift on major/minor, `go build` fails immediately with
+`undefined: runtime.GeneratedByMarkoGo_vX_Y` instead of a confusing
+downstream error. A patch bump never touches this marker.
+
+To cut a release:
+
+1. Bump `"version"` in `codegen/package.json`.
+   - Bumping the **major or minor** also requires adding the matching
+     `GeneratedByMarkoGo_vX_Y` constant to `runtime/version.go` (keep the old
+     one too, until no supported release still needs it — see that file's
+     doc comment).
+   - A **patch** bump needs no runtime change.
+2. Regenerate generated output and commit any diff:
+   ```sh
+   cd codegen && UPDATE_GOLDENS=1 bun test test/golden/golden.test.mjs
+   moon run codegen:generate-examples   # or: moon run :check
+   ```
+3. Run the lockstep check locally (also enforced in CI):
+   ```sh
+   bun scripts/release-check.mjs
+   ```
+   This asserts `codegen/package.json`'s version, the marker codegen emits,
+   and the constant `runtime/version.go` exports all agree.
+4. Commit, then tag and push:
+   ```sh
+   git tag vX.Y.Z
+   git push origin vX.Y.Z
+   ```
+5. Publish `marko-go` to npm manually (no automated publish yet):
+   ```sh
+   cd codegen && npm publish
+   ```
+   The Go module needs no separate publish step — `go get
+   github.com/svallory/go-marko@vX.Y.Z` resolves directly from the pushed tag.
+
 ## Code style
 
 - Go code: standard `gofmt`/`go vet` conventions.

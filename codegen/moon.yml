@@ -27,6 +27,18 @@ tasks:
     options:
       cache: false
 
+  # Lockstep version gate: codegen/package.json, the version marker codegen
+  # emits, and the sentinel runtime/version.go exports must all agree. See
+  # scripts/release-check.mjs and runtime/version.go.
+  release-check:
+    command: "bun"
+    args: ["../scripts/release-check.mjs"]
+    inputs:
+      - "src/**/*"
+      - "package.json"
+      - "/runtime/version.go"
+      - "/scripts/release-check.mjs"
+
   # Aggregate entry point run by CI: `moon run :check`.
   check:
     command: "echo"
@@ -34,3 +46,4 @@ tasks:
     deps:
       - "test"
       - "generate-examples"
+      - "release-check"
